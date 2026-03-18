@@ -5,7 +5,7 @@
   "description": "A static blog site built with Astro that converts markdown posts into styled HTML",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "astro build && touch docs/.nojekyll",
     "preview": "astro preview"
   },
   "dependencies": {
