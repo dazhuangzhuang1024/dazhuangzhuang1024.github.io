@@ -128,7 +128,30 @@ git push
 
 ## 自定义
 
+### 关于页面
+
+用 Typora 或任何编辑器编辑 `src/content/about.md`：
+
+- **Front matter** 控制你的名字、头像、GitHub 链接和邮箱
+- **正文** 用标准 markdown 写你的个人简介
+- 支持所有 markdown 特性（标题、列表、链接、图片等）
+
+```markdown
+---
+name: "你的名字"
+github: "https://github.com/YOUR_USERNAME"
+github_username: "YOUR_USERNAME"
+email: "your@email.com"
+avatar: "/images/avatar.jpg"
+---
+
+用 markdown 写你的简介...
+```
+
+将头像放到 `public/images/avatar.jpg`。
+
+### 其他自定义
+
 - **博客名称：** 编辑 `src/layouts/BaseLayout.astro`（页头和页脚）
-- **关于页面：** 编辑 `src/pages/about.astro`
 - **样式：** 编辑 `src/styles/global.css`
 - **输出目录：** 修改 `astro.config.mjs` 中的 `outDir`

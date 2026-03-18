@@ -263,15 +263,45 @@ a:hover {
 }
 
 .archive-list { list-style: none; padding: 0; margin: 0; }
-.archive-list li {
+.archive-group { border-bottom: 1px solid var(--color-border); }
+.archive-group:last-child { border-bottom: none; }
+.archive-toggle {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
   padding: var(--space-xs) 0;
-  border-bottom: 1px solid var(--color-border);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  color: var(--color-text);
+  transition: color 0.2s ease;
 }
-.archive-list li:last-child { border-bottom: none; }
-.archive-month { color: var(--color-text); }
-.archive-count { color: var(--color-text-secondary); font-size: 0.8rem; }
+.archive-toggle:hover { color: var(--color-accent); }
+.archive-arrow {
+  font-size: 0.6rem;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.archive-group.open .archive-arrow { transform: rotate(90deg); }
+.archive-count { color: var(--color-text-secondary); font-size: 0.8rem; margin-left: auto; }
+.archive-posts {
+  list-style: none;
+  padding: 0 0 var(--space-xs) var(--space-md);
+  margin: 0;
+  display: none;
+}
+.archive-group.open .archive-posts { display: block; }
+.archive-posts li { padding: 2px 0; }
+.archive-posts a {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+.archive-posts a:hover { color: var(--color-accent); }
 
 @media (max-width: 899px) {
   .index-sidebar {
@@ -375,7 +405,15 @@ code { font-family: var(--font-mono); background: var(--color-code-bg); padding:
 /* ===== About Page ===== */
 .about-page { max-width: var(--content-width); }
 .about-hero { text-align: center; margin-bottom: var(--space-xl); }
-.about-avatar-lg { font-size: 5rem; line-height: 1; margin-bottom: var(--space-md); }
+.about-avatar-lg {
+  margin-bottom: var(--space-md);
+}
+.about-avatar-lg img {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  object-fit: cover;
+}
 .about-hero h1 { font-size: 2rem; }
 .about-content h2 { margin-top: var(--space-lg); margin-bottom: var(--space-sm); }
 .about-content p { color: var(--color-text); line-height: 1.8; }

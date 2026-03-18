@@ -143,7 +143,30 @@ git push
 
 ## Customize
 
+### About Page
+
+Edit `src/content/about.md` in Typora or any text editor:
+
+- **Front matter** controls your name, avatar, GitHub link, and email
+- **Body** is your bio written in standard markdown
+- Supports all markdown features (headings, lists, links, images, etc.)
+
+```markdown
+---
+name: "Your Name"
+github: "https://github.com/YOUR_USERNAME"
+github_username: "YOUR_USERNAME"
+email: "your@email.com"
+avatar: "/images/avatar.jpg"
+---
+
+Your bio here in markdown...
+```
+
+Place your avatar at `public/images/avatar.jpg`.
+
+### Other Customizations
+
 - **Blog name:** Edit `src/layouts/BaseLayout.astro` (header and footer)
-- **About page:** Edit `src/pages/about.astro`
 - **Styling:** Edit `src/styles/global.css`
 - **Output directory:** Change `outDir` in `astro.config.mjs`

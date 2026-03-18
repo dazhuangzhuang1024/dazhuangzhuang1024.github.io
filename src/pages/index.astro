@@ -82,9 +82,17 @@ const searchIndex = posts.map((p) => ({
         <h4>Archive</h4>
         <ul class="archive-list">
           {[...archive.entries()].map(([month, monthPosts]) => (
-            <li>
-              <span class="archive-month">{month}</span>
-              <span class="archive-count">({monthPosts.length})</span>
+            <li class="archive-group">
+              <button class="archive-toggle" aria-expanded="false">
+                <span class="archive-arrow">▶</span>
+                <span class="archive-month">{month}</span>
+                <span class="archive-count">({monthPosts.length})</span>
+              </button>
+              <ul class="archive-posts">
+                {monthPosts.map((post) => (
+                  <li><a href={`/posts/${post.id}`}>{post.data.title}</a></li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>
@@ -112,6 +120,15 @@ const searchIndex = posts.map((p) => ({
       }
 
       input?.addEventListener('input', filterPosts);
+
+      // Archive toggle
+      document.querySelectorAll('.archive-toggle').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const expanded = btn.getAttribute('aria-expanded') === 'true';
+          btn.setAttribute('aria-expanded', String(!expanded));
+          btn.parentElement.classList.toggle('open');
+        });
+      });
 
       tagBtns.forEach(btn => {
         btn.addEventListener('click', () => {
