@@ -1,0 +1,38 @@
+<!DOCTYPE html><html lang="en"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>My Blog</title><link rel="stylesheet" href="/_astro/about.CJImQ-Z2.css"></head> <body> <header> <nav> <a class="site-title" href="/">My Blog</a> <div class="nav-links"> <a href="/about">About</a> </div> </nav> </header> <main>  <div class="index-layout"> <div class="index-main"> <ul class="post-list" id="post-list"> <li data-tags="mermaid,diagrams,tutorial" data-title="using mermaid diagrams in blog posts" data-desc="a quick demo of how mermaid diagrams render beautifully in our blog posts."> <a href="/posts/mermaid-diagrams"> <h2>Using Mermaid Diagrams in Blog Posts</h2> <time datetime="2026-03-19T00:00:00.000Z"> March 19, 2026 </time> <p class="description">A quick demo of how Mermaid diagrams render beautifully in our blog posts.</p> </a> <div class="post-tags"> <span class="tag">mermaid</span><span class="tag">diagrams</span><span class="tag">tutorial</span> </div> </li><li data-tags="python,intro,blog" data-title="hello world: my first blog post" data-desc="welcome to my new blog! this is my very first post where i share what this blog is all about."> <a href="/posts/hello-world"> <h2>Hello World: My First Blog Post</h2> <time datetime="2026-03-18T00:00:00.000Z"> March 18, 2026 </time> <p class="description">Welcome to my new blog! This is my very first post where I share what this blog is all about.</p> </a> <div class="post-tags"> <span class="tag">python</span><span class="tag">intro</span><span class="tag">blog</span> </div> </li> </ul> </div> <aside class="index-sidebar"> <div class="sidebar-section"> <h4>Search</h4> <input type="text" id="search-input" placeholder="Search posts..." aria-label="Search posts"> </div> <div class="sidebar-section"> <h4>Tags</h4> <div class="tag-cloud"> <button class="tag-btn" data-tag="mermaid">mermaid <span class="tag-count">(1)</span></button><button class="tag-btn" data-tag="diagrams">diagrams <span class="tag-count">(1)</span></button><button class="tag-btn" data-tag="tutorial">tutorial <span class="tag-count">(1)</span></button><button class="tag-btn" data-tag="python">python <span class="tag-count">(1)</span></button><button class="tag-btn" data-tag="intro">intro <span class="tag-count">(1)</span></button><button class="tag-btn" data-tag="blog">blog <span class="tag-count">(1)</span></button> </div> </div> <div class="sidebar-section"> <h4>Archive</h4> <ul class="archive-list"> <li> <span class="archive-month">March 2026</span> <span class="archive-count">(2)</span> </li> </ul> </div> </aside> </div> <script>
+    (function() {
+      const input = document.getElementById('search-input');
+      const postList = document.getElementById('post-list');
+      const items = postList ? Array.from(postList.querySelectorAll('li')) : [];
+      const tagBtns = Array.from(document.querySelectorAll('.tag-btn'));
+      let activeTag = null;
+
+      function filterPosts() {
+        const query = (input?.value || '').toLowerCase().trim();
+        items.forEach(li => {
+          const title = li.dataset.title || '';
+          const desc = li.dataset.desc || '';
+          const tags = li.dataset.tags || '';
+          const matchesSearch = !query || title.includes(query) || desc.includes(query) || tags.includes(query);
+          const matchesTag = !activeTag || tags.split(',').includes(activeTag);
+          li.style.display = (matchesSearch && matchesTag) ? '' : 'none';
+        });
+      }
+
+      input?.addEventListener('input', filterPosts);
+
+      tagBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tag = btn.dataset.tag;
+          if (activeTag === tag) {
+            activeTag = null;
+            btn.classList.remove('active');
+          } else {
+            activeTag = tag;
+            tagBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+          }
+          filterPosts();
+        });
+      });
+    })();
+  </script>  </main> <footer> <p>&copy; 2026 My Blog</p> </footer>  </body> </html>

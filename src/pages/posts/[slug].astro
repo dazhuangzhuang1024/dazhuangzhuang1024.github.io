@@ -1,0 +1,87 @@
+---
+import { getCollection, render } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+export async function getStaticPaths() {
+  const posts = await getCollection('blog');
+  posts.sort((a, b) => a.data.date.getTime() - b.data.date.getTime());
+
+  return posts.map((post, i) => ({
+    params: { slug: post.id },
+    props: {
+      post,
+      prev: i > 0 ? { slug: posts[i - 1].id, title: posts[i - 1].data.title } : null,
+      next: i < posts.length - 1 ? { slug: posts[i + 1].id, title: posts[i + 1].data.title } : null,
+    },
+  }));
+}
+
+const { post, prev, next } = Astro.props;
+const { Content, headings } = await render(post);
+const hasMermaid = post.body?.includes('```mermaid') ?? false;
+const tocHeadings = headings.filter((h) => h.depth <= 3);
+---
+
+<BaseLayout title={post.data.title} hasMermaid={hasMermaid}>
+  <div class="post-layout">
+    <article>
+      <div class="post-header">
+        <h1>{post.data.title}</h1>
+        <time datetime={post.data.date.toISOString()}>
+          {post.data.date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          })}
+        </time>
+      </div>
+      <div class="post-content">
+        <Content />
+      </div>
+      <nav class="post-nav">
+        {prev && (
+          <a href={`/posts/${prev.slug}`}>← {prev.title}</a>
+        )}
+        {next && (
+          <a class="next" href={`/posts/${next.slug}`}>{next.title} →</a>
+        )}
+      </nav>
+      <p><a href="/">← Back to all posts</a></p>
+      <section class="comments">
+        <h2>Comments</h2>
+        <script
+          is:inline
+          src="https://giscus.app/client.js"
+          data-repo="OWNER/REPO"
+          data-repo-id="YOUR_REPO_ID"
+          data-category="Announcements"
+          data-category-id="YOUR_CATEGORY_ID"
+          data-mapping="pathname"
+          data-strict="0"
+          data-reactions-enabled="1"
+          data-emit-metadata="0"
+          data-input-position="top"
+          data-theme="light"
+          data-lang="en"
+          data-loading="lazy"
+          crossorigin="anonymous"
+          async
+        ></script>
+      </section>
+    </article>
+    {tocHeadings.length > 0 && (
+      <aside class="toc">
+        <nav>
+          <h4>Outline</h4>
+          <ul>
+            {tocHeadings.map((h) => (
+              <li class={`toc-depth-${h.depth}`}>
+                <a href={`#${h.slug}`}>{h.text}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </aside>
+    )}
+  </div>
+</BaseLayout>

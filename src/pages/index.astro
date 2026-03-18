@@ -1,0 +1,132 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const posts = await getCollection('blog');
+posts.sort((a, b) => b.data.date.getTime() - a.data.date.getTime());
+
+// Build archive grouped by year-month
+const archive = new Map<string, typeof posts>();
+for (const post of posts) {
+  const key = post.data.date.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+  if (!archive.has(key)) archive.set(key, []);
+  archive.get(key)!.push(post);
+}
+
+// Build tag counts
+const tagCounts = new Map<string, number>();
+for (const post of posts) {
+  for (const tag of post.data.tags) {
+    tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+  }
+}
+const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
+
+// Build search index as JSON for client-side search
+const searchIndex = posts.map((p) => ({
+  id: p.id,
+  title: p.data.title,
+  description: p.data.description || '',
+  tags: p.data.tags,
+}));
+---
+
+<BaseLayout title="My Blog">
+  <div class="index-layout">
+    <div class="index-main">
+      {posts.length > 0 ? (
+        <ul class="post-list" id="post-list">
+          {posts.map((post) => (
+            <li data-tags={post.data.tags.join(',')} data-title={post.data.title.toLowerCase()} data-desc={(post.data.description || '').toLowerCase()}>
+              <a href={`/posts/${post.id}`}>
+                <h2>{post.data.title}</h2>
+                <time datetime={post.data.date.toISOString()}>
+                  {post.data.date.toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  })}
+                </time>
+                {post.data.description && (
+                  <p class="description">{post.data.description}</p>
+                )}
+              </a>
+              {post.data.tags.length > 0 && (
+                <div class="post-tags">
+                  {post.data.tags.map((tag: string) => (
+                    <span class="tag">{tag}</span>
+                  ))}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p class="empty-state">No posts available yet. Check back soon!</p>
+      )}
+    </div>
+    <aside class="index-sidebar">
+      <div class="sidebar-section">
+        <h4>Search</h4>
+        <input type="text" id="search-input" placeholder="Search posts..." aria-label="Search posts" />
+      </div>
+      <div class="sidebar-section">
+        <h4>Tags</h4>
+        <div class="tag-cloud">
+          {sortedTags.map(([tag, count]) => (
+            <button class="tag-btn" data-tag={tag}>{tag} <span class="tag-count">({count})</span></button>
+          ))}
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <h4>Archive</h4>
+        <ul class="archive-list">
+          {[...archive.entries()].map(([month, monthPosts]) => (
+            <li>
+              <span class="archive-month">{month}</span>
+              <span class="archive-count">({monthPosts.length})</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </aside>
+  </div>
+  <script is:inline>
+    (function() {
+      const input = document.getElementById('search-input');
+      const postList = document.getElementById('post-list');
+      const items = postList ? Array.from(postList.querySelectorAll('li')) : [];
+      const tagBtns = Array.from(document.querySelectorAll('.tag-btn'));
+      let activeTag = null;
+
+      function filterPosts() {
+        const query = (input?.value || '').toLowerCase().trim();
+        items.forEach(li => {
+          const title = li.dataset.title || '';
+          const desc = li.dataset.desc || '';
+          const tags = li.dataset.tags || '';
+          const matchesSearch = !query || title.includes(query) || desc.includes(query) || tags.includes(query);
+          const matchesTag = !activeTag || tags.split(',').includes(activeTag);
+          li.style.display = (matchesSearch && matchesTag) ? '' : 'none';
+        });
+      }
+
+      input?.addEventListener('input', filterPosts);
+
+      tagBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tag = btn.dataset.tag;
+          if (activeTag === tag) {
+            activeTag = null;
+            btn.classList.remove('active');
+          } else {
+            activeTag = tag;
+            tagBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+          }
+          filterPosts();
+        });
+      });
+    })();
+  </script>
+</BaseLayout>

@@ -1,0 +1,43 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  hasMermaid?: boolean;
+}
+
+const { title, hasMermaid = false } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <header>
+      <nav>
+        <a class="site-title" href="/">My Blog</a>
+        <div class="nav-links">
+          <a href="/about">About</a>
+        </div>
+      </nav>
+    </header>
+    <main>
+      <slot />
+    </main>
+    <footer>
+      <p>&copy; 2026 My Blog</p>
+    </footer>
+    {hasMermaid && (
+      <Fragment>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js" is:inline></script>
+        <script is:inline>
+          mermaid.initialize({ startOnLoad: true, securityLevel: 'strict' });
+        </script>
+      </Fragment>
+    )}
+  </body>
+</html>
