@@ -48,7 +48,6 @@ const tocHeadings = headings.filter((h) => h.depth <= 3);
       </nav>
       <p><a href="/">← Back to all posts</a></p>
       <section class="comments">
-        <h2>Comments</h2>
         <script
           is:inline
           src="https://giscus.app/client.js"
@@ -61,12 +60,29 @@ const tocHeadings = headings.filter((h) => h.depth <= 3);
           data-reactions-enabled="1"
           data-emit-metadata="0"
           data-input-position="bottom"
-          data-theme="preferred_color_scheme"
+          data-theme="light"
           data-lang="zh-CN"
           data-loading="lazy"
           crossorigin="anonymous"
           async
         ></script>
+        <script is:inline>
+          // Sync giscus theme with site theme on load
+          (function() {
+            const theme = document.documentElement.getAttribute('data-theme') || 'light';
+            const observer = new MutationObserver(() => {
+              const iframe = document.querySelector('iframe.giscus-frame');
+              if (iframe) {
+                iframe.contentWindow.postMessage(
+                  { giscus: { setConfig: { theme: theme === 'dark' ? 'dark' : 'light' } } },
+                  'https://giscus.app'
+                );
+                observer.disconnect();
+              }
+            });
+            observer.observe(document.querySelector('.comments'), { childList: true, subtree: true });
+          })();
+        </script>
       </section>
     </article>
     {tocHeadings.length > 0 && (

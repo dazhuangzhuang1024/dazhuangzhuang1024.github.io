@@ -1,4 +1,11 @@
-<!DOCTYPE html><html lang="en"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Working with Images and Media</title><link rel="stylesheet" href="/_astro/about.YwbYczHK.css"></head> <body> <header> <nav> <a class="site-title" href="/">My Blog</a> <div class="nav-links"> <a href="/about">About</a> </div> </nav> </header> <main>  <div class="post-layout"> <article> <div class="post-header"> <h1>Working with Images and Media</h1> <time datetime="2026-03-20T00:00:00.000Z"> March 20, 2026 </time> </div> <div class="post-content"> <h2 id="adding-images-to-your-posts">Adding Images to Your Posts</h2>
+<!DOCTYPE html><html lang="en"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Working with Images and Media</title><script>
+      (function() {
+        const saved = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const theme = saved || (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script><link rel="stylesheet" href="/_astro/about.Rl_t681B.css"></head> <body> <header> <nav> <a class="site-title" href="/">My Blog</a> <div class="nav-links"> <a href="/about">About</a> </div> <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"> <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg> <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"></path></svg> </button> </nav> </header> <main>  <div class="post-layout"> <article> <div class="post-header"> <h1>Working with Images and Media</h1> <time datetime="2026-03-20T00:00:00.000Z"> March 20, 2026 </time> </div> <div class="post-content"> <h2 id="adding-images-to-your-posts">Adding Images to Your Posts</h2>
 <p>One of the basics of any blog is embedding images. Just use standard markdown syntax and put your files in the <code>public/images/</code> folder.</p>
 <h3 id="a-landscape-photo">A Landscape Photo</h3>
 <p>Here’s a demo landscape image:</p>
@@ -49,6 +56,40 @@
     C --> D[npm run build]
     D --> E[Copied to docs/images/]
     E --> F[Live on GitHub Pages]</div>
-<p>That’s it — images, videos, code, and diagrams all working together.</p> </div> <nav class="post-nav"> <a href="/posts/mermaid-diagrams">← Using Mermaid Diagrams in Blog Posts</a>  </nav> <p><a href="/">← Back to all posts</a></p> <section class="comments"> <h2>Comments</h2> <script src="https://giscus.app/client.js" data-repo="dazhuangzhuang1024/dazhuangzhuang1024.github.io" data-repo-id="R_kgDORqhWCw" data-category="General" data-category-id="DIC_kwDORqhWC84C4tPe" data-mapping="pathname" data-strict="0" data-reactions-enabled="1" data-emit-metadata="0" data-input-position="bottom" data-theme="preferred_color_scheme" data-lang="zh-CN" data-loading="lazy" crossorigin="anonymous" async></script> </section> </article> <aside class="toc"> <nav> <h4>Outline</h4> <ul> <li class="toc-depth-2"> <a href="#adding-images-to-your-posts">Adding Images to Your Posts</a> </li><li class="toc-depth-3"> <a href="#a-landscape-photo">A Landscape Photo</a> </li><li class="toc-depth-3"> <a href="#terminal-screenshot">Terminal Screenshot</a> </li><li class="toc-depth-2"> <a href="#image-tips">Image Tips</a> </li><li class="toc-depth-2"> <a href="#embedding-videos">Embedding Videos</a> </li><li class="toc-depth-2"> <a href="#mixing-it-all-together">Mixing It All Together</a> </li> </ul> </nav> </aside> </div>  </main> <footer> <p>&copy; 2026 My Blog</p> </footer>  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script> <script>
+<p>That’s it — images, videos, code, and diagrams all working together.</p> </div> <nav class="post-nav"> <a href="/posts/mermaid-diagrams">← Using Mermaid Diagrams in Blog Posts</a>  </nav> <p><a href="/">← Back to all posts</a></p> <section class="comments"> <script src="https://giscus.app/client.js" data-repo="dazhuangzhuang1024/dazhuangzhuang1024.github.io" data-repo-id="R_kgDORqhWCw" data-category="General" data-category-id="DIC_kwDORqhWC84C4tPe" data-mapping="pathname" data-strict="0" data-reactions-enabled="1" data-emit-metadata="0" data-input-position="bottom" data-theme="light" data-lang="zh-CN" data-loading="lazy" crossorigin="anonymous" async></script> <script>
+          // Sync giscus theme with site theme on load
+          (function() {
+            const theme = document.documentElement.getAttribute('data-theme') || 'light';
+            const observer = new MutationObserver(() => {
+              const iframe = document.querySelector('iframe.giscus-frame');
+              if (iframe) {
+                iframe.contentWindow.postMessage(
+                  { giscus: { setConfig: { theme: theme === 'dark' ? 'dark' : 'light' } } },
+                  'https://giscus.app'
+                );
+                observer.disconnect();
+              }
+            });
+            observer.observe(document.querySelector('.comments'), { childList: true, subtree: true });
+          })();
+        </script> </section> </article> <aside class="toc"> <nav> <h4>Outline</h4> <ul> <li class="toc-depth-2"> <a href="#adding-images-to-your-posts">Adding Images to Your Posts</a> </li><li class="toc-depth-3"> <a href="#a-landscape-photo">A Landscape Photo</a> </li><li class="toc-depth-3"> <a href="#terminal-screenshot">Terminal Screenshot</a> </li><li class="toc-depth-2"> <a href="#image-tips">Image Tips</a> </li><li class="toc-depth-2"> <a href="#embedding-videos">Embedding Videos</a> </li><li class="toc-depth-2"> <a href="#mixing-it-all-together">Mixing It All Together</a> </li> </ul> </nav> </aside> </div>  </main> <footer> <p>&copy; 2026 My Blog</p> </footer> <script>
+      (function() {
+        const btn = document.getElementById('theme-toggle');
+        btn.addEventListener('click', () => {
+          const current = document.documentElement.getAttribute('data-theme');
+          const next = current === 'dark' ? 'light' : 'dark';
+          document.documentElement.setAttribute('data-theme', next);
+          localStorage.setItem('theme', next);
+          // Update giscus theme if present
+          const giscus = document.querySelector('iframe.giscus-frame');
+          if (giscus) {
+            giscus.contentWindow.postMessage(
+              { giscus: { setConfig: { theme: next === 'dark' ? 'dark' : 'light' } } },
+              'https://giscus.app'
+            );
+          }
+        });
+      })();
+    </script>  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script> <script>
           mermaid.initialize({ startOnLoad: true, securityLevel: 'strict' });
         </script>  </body> </html>
