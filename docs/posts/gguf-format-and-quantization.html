@@ -1,0 +1,1635 @@
+<!DOCTYPE html><html lang="en"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>浅谈 GGUF：格式设计与 Quantization 机制</title><script>
+      (function() {
+        const saved = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const theme = saved || (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script><link rel="stylesheet" href="/_astro/about.Rl_t681B.css"></head> <body> <header> <nav> <a class="site-title" href="/">My Blog</a> <div class="nav-links"> <a href="/about">About</a> </div> <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode"> <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg> <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"></path></svg> </button> </nav> </header> <main>  <div class="post-layout"> <article> <div class="post-header"> <h1>浅谈 GGUF：格式设计与 Quantization 机制</h1> <time datetime="2026-04-05T00:00:00.000Z"> April 5, 2026 </time> </div> <div class="post-content"> <blockquote>
+<p>前两天看到 google deepmind 发布了 Gemma 4，本地 macmini 上就可以跑，就想着玩玩。首先下载下来熟悉的 safetensors，然后使用 Apple 的 MLX 来跑，发现 4B 的直接内存爆炸了，算了下也是不够的。然后又有人提到 lm-studio，就下载了个看看，下载模型的时候，发现有 GGUF/MLX 标注，然后用 GGUF 跑了下 4B 发现内存使用量不大。</p>
+<p>lm-studio 就是个前端，后面的 engine 还是 MLX or llama.cpp，想知道区别在哪。另外，权重文件名也是标注一些看起来跟量化相关的名词（Q4_K_M 什么的），虽然很早前公司有人分享过 GGUF，不过现在早忘了，正好趁此机会了解一下，看看 device 侧现在怎么玩。</p>
+</blockquote>
+<p>GGUF（GGML Universal File）是 llama.cpp 项目使用的模型文件格式。它将模型的 metadata、tokenizer 配置、tensor 数据等所有信息打包到一个 self-contained 的二进制文件中，使得模型的分发和加载都极其简单——一个文件即是一个完整的模型。</p>
+<p>本文从 GGUF 文件格式出发，逐步深入其 quantization 机制，基于 llama.cpp 源码（tag: b8667）进行解读。</p>
+<h2 id="一gguf-文件格式">一、GGUF 文件格式</h2>
+<h3 id="11-设计哲学">1.1 设计哲学</h3>
+<p>GGUF 的前身是 GGML 格式（后来的 GGJTv3）。旧格式存在的问题是：metadata 和 tensor 数据耦合严重，不同模型架构需要不同的 loader 代码，扩展性差。</p>
+<p>GGUF 的设计目标是：</p>
+<ul>
+<li><strong>Self-contained</strong>：一个文件包含运行模型所需的一切——架构参数、tokenizer、tensor weight</li>
+<li><strong>Extensible</strong>：通过 key-value pair 存储 metadata，新增字段不会破坏向后兼容</li>
+<li><strong>Mmap-friendly</strong>：tensor 数据区域连续存放且对齐，可以直接 mmap 到内存，避免额外的拷贝</li>
+<li><strong>Single-file deployment</strong>：不需要额外的 config.json、tokenizer.json 等文件</li>
+</ul>
+<h3 id="12-二进制布局">1.2 二进制布局</h3>
+<p>GGUF 文件的结构定义在 <code>ggml/include/gguf.h</code> 的头部注释中：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>┌─────────────────────────────────────────┐</span></span>
+<span class="line"><span>│  Magic: "GGUF" (4 bytes)                │</span></span>
+<span class="line"><span>│  Version: uint32 (当前为 3)              │</span></span>
+<span class="line"><span>│  Tensor count: int64                     │</span></span>
+<span class="line"><span>│  KV pair count: int64                    │</span></span>
+<span class="line"><span>├─────────────────────────────────────────┤</span></span>
+<span class="line"><span>│  KV Pairs (元数据区)                     │</span></span>
+<span class="line"><span>│  ┌─────────────────────────────────┐    │</span></span>
+<span class="line"><span>│  │ Key (string)                    │    │</span></span>
+<span class="line"><span>│  │ Value type (gguf_type)          │    │</span></span>
+<span class="line"><span>│  │ Value (binary data)             │    │</span></span>
+<span class="line"><span>│  └─────────────────────────────────┘    │</span></span>
+<span class="line"><span>│  ... 重复 n_kv 次                        │</span></span>
+<span class="line"><span>├─────────────────────────────────────────┤</span></span>
+<span class="line"><span>│  Tensor Infos (张量描述区)               │</span></span>
+<span class="line"><span>│  ┌─────────────────────────────────┐    │</span></span>
+<span class="line"><span>│  │ Name (string)                   │    │</span></span>
+<span class="line"><span>│  │ N dimensions (uint32)           │    │</span></span>
+<span class="line"><span>│  │ Shape (int64 × n_dims)          │    │</span></span>
+<span class="line"><span>│  │ Data type (ggml_type)           │    │</span></span>
+<span class="line"><span>│  │ Data offset (uint64)            │    │</span></span>
+<span class="line"><span>│  └─────────────────────────────────┘    │</span></span>
+<span class="line"><span>│  ... 重复 n_tensors 次                   │</span></span>
+<span class="line"><span>├─────── alignment padding ───────────────┤</span></span>
+<span class="line"><span>│  Tensor Data (张量数据区, 对齐存放)       │</span></span>
+<span class="line"><span>│  [tensor_0 data] [padding]              │</span></span>
+<span class="line"><span>│  [tensor_1 data] [padding]              │</span></span>
+<span class="line"><span>│  ...                                    │</span></span>
+<span class="line"><span>└─────────────────────────────────────────┘</span></span></code></pre>
+<p>几个关键设计点：</p>
+<ul>
+<li><strong>String encoding</strong>：<code>uint64 长度 + 字节内容</code>（无 null terminator）</li>
+<li><strong>Alignment</strong>：默认 32 bytes 对齐（可通过 <code>general.alignment</code> KV 自定义），确保 tensor 数据可以高效 mmap</li>
+<li><strong>Tensor offset</strong>：记录的是相对于 tensor data 区域起始位置的偏移，不是文件绝对偏移</li>
+</ul>
+<p><img src="/_ci/blog/gguf-format-and-quantization/images/gguf-spec.png" alt="GGUF file format specification"></p>
+<h3 id="13-kv-metadata-体系">1.3 KV Metadata 体系</h3>
+<p>GGUF 的 metadata 使用统一的 key-value 结构存储，支持多种数据类型：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">enum</span><span style="color:#E1E4E8"> gguf_type {</span></span>
+<span class="line"><span style="color:#E1E4E8">    GGUF_TYPE_UINT8, GGUF_TYPE_INT8,</span></span>
+<span class="line"><span style="color:#E1E4E8">    GGUF_TYPE_UINT16, GGUF_TYPE_INT16,</span></span>
+<span class="line"><span style="color:#E1E4E8">    GGUF_TYPE_UINT32, GGUF_TYPE_INT32,</span></span>
+<span class="line"><span style="color:#E1E4E8">    GGUF_TYPE_FLOAT32, GGUF_TYPE_BOOL,</span></span>
+<span class="line"><span style="color:#E1E4E8">    GGUF_TYPE_STRING, GGUF_TYPE_ARRAY,</span></span>
+<span class="line"><span style="color:#E1E4E8">    GGUF_TYPE_UINT64, GGUF_TYPE_INT64,</span></span>
+<span class="line"><span style="color:#E1E4E8">    GGUF_TYPE_FLOAT64,</span></span>
+<span class="line"><span style="color:#E1E4E8">};</span></span></code></pre>
+<p>Key 遵循命名空间约定，主要分为以下几类：</p>
+<p><strong>通用信息（<code>general.*</code>）</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>类型</th><th>说明</th></tr></thead><tbody><tr><td><code>general.architecture</code></td><td>string</td><td>模型架构，如 “llama”, “qwen2”</td></tr><tr><td><code>general.name</code></td><td>string</td><td>模型名称</td></tr><tr><td><code>general.file_type</code></td><td>uint32</td><td>quantization 类型编号</td></tr><tr><td><code>general.quantization_version</code></td><td>uint32</td><td>quantization 版本</td></tr><tr><td><code>general.alignment</code></td><td>uint32</td><td>tensor 数据对齐字节数</td></tr></tbody></table>
+<p><strong>模型超参数（<code>{arch}.*</code>）</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>说明</th></tr></thead><tbody><tr><td><code>{arch}.context_length</code></td><td>上下文长度</td></tr><tr><td><code>{arch}.embedding_length</code></td><td>embedding 维度</td></tr><tr><td><code>{arch}.block_count</code></td><td>transformer 层数</td></tr><tr><td><code>{arch}.feed_forward_length</code></td><td>FFN 中间维度</td></tr><tr><td><code>{arch}.attention.head_count</code></td><td>attention head 数量</td></tr><tr><td><code>{arch}.vocab_size</code></td><td>词表大小</td></tr></tbody></table>
+<p><strong>Tokenizer（<code>tokenizer.ggml.*</code>）</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>说明</th></tr></thead><tbody><tr><td><code>tokenizer.ggml.model</code></td><td>tokenizer 类型（“gpt2”, “llama” 等）</td></tr><tr><td><code>tokenizer.ggml.tokens</code></td><td>完整词表（string array）</td></tr><tr><td><code>tokenizer.ggml.scores</code></td><td>token 分数（float array）</td></tr><tr><td><code>tokenizer.ggml.merges</code></td><td>BPE merge 规则（string array）</td></tr><tr><td><code>tokenizer.ggml.bos_token_id</code></td><td>BOS token ID</td></tr><tr><td><code>tokenizer.ggml.eos_token_id</code></td><td>EOS token ID</td></tr><tr><td><code>tokenizer.chat_template</code></td><td>Jinja chat template</td></tr></tbody></table>
+<p>这套 KV 体系的强大之处在于：<strong>loader 不需要知道模型的具体架构</strong>，只要按照命名规范读取 KV 即可获取所有需要的参数。新增模型架构只需要定义新的 KV 键名，不需要修改文件格式本身。</p>
+<h3 id="14-tensor-存储与-ggml_type">1.4 Tensor 存储与 ggml_type</h3>
+<p>每个 tensor 在 info 区域记录了它的名字、shape 和 <strong>data type</strong>（<code>ggml_type</code>）。这个 type 决定了 tensor data 区域中对应数据的编码方式。</p>
+<p>llama.cpp 支持的 type 包括：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#E1E4E8">GGML_TYPE_F32</span><span style="color:#6A737D">     // 32-bit float</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_F16</span><span style="color:#6A737D">     // 16-bit float</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q4_0</span><span style="color:#6A737D">    // 4-bit quantization, variant 0</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q4_1</span><span style="color:#6A737D">    // 4-bit quantization, variant 1</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q5_0</span><span style="color:#6A737D">    // 5-bit quantization, variant 0</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q5_1</span><span style="color:#6A737D">    // 5-bit quantization, variant 1</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q8_0</span><span style="color:#6A737D">    // 8-bit quantization, variant 0</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q2_K</span><span style="color:#6A737D">    // 2-bit K-quant</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q3_K</span><span style="color:#6A737D">    // 3-bit K-quant</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q4_K</span><span style="color:#6A737D">    // 4-bit K-quant</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q5_K</span><span style="color:#6A737D">    // 5-bit K-quant</span></span>
+<span class="line"><span style="color:#E1E4E8">GGML_TYPE_Q6_K</span><span style="color:#6A737D">    // 6-bit K-quant</span></span>
+<span class="line"><span style="color:#6A737D">// ... 以及 IQ (importance-weighted) 系列等</span></span></code></pre>
+<p><strong>一个 GGUF 文件中的不同 tensor 可以使用不同的 type</strong>。例如 Q4_K_M 策略下，大部分 weight 使用 Q4_K，但关键 tensor 会使用 Q5_K 或 Q6_K——这些信息都记录在每个 tensor 的 info 中。</p>
+<blockquote>
+<p>在 huggingface 上点击图标可以看到 gguf 文件的 meta 信息</p>
+<p><img src="/_ci/blog/gguf-format-and-quantization/images/image-20260405215702856.png" alt="Huggingface GGUF metadata viewer"></p>
+</blockquote>
+<h3 id="15-生产流程">1.5 生产流程</h3>
+<p>一个典型的 GGUF 文件生产流程：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>HuggingFace 模型 (PyTorch safetensors)</span></span>
+<span class="line"><span>          │</span></span>
+<span class="line"><span>          ▼</span></span>
+<span class="line"><span>  convert_hf_to_gguf.py    ← 转换为 GGUF (FP16/FP32)</span></span>
+<span class="line"><span>          │</span></span>
+<span class="line"><span>          ▼</span></span>
+<span class="line"><span>  llama-quantize            ← 量化为指定 type (Q4_K_M 等)</span></span>
+<span class="line"><span>          │</span></span>
+<span class="line"><span>          ▼</span></span>
+<span class="line"><span>  model-Q4_K_M.gguf        ← 最终可部署文件</span></span></code></pre>
+<h2 id="二命名规范">二、命名规范</h2>
+<p>GGUF 文件遵循一套标准的命名约定（<a href="https://github.com/ggml-org/ggml/blob/master/docs/gguf.md#gguf-naming-convention">GGUF Naming Convention</a>），目的是让人类能够一眼获取模型最重要的信息。</p>
+<h3 id="21-命名格式">2.1 命名格式</h3>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>&#x3C;BaseName>-&#x3C;SizeLabel>-&#x3C;FineTune>-&#x3C;Version>-&#x3C;Encoding>-&#x3C;Type>-&#x3C;Shard>.gguf</span></span></code></pre>
+<p>各组件之间用 <code>-</code> 分隔，只有 BaseName、SizeLabel 和 Version 是必需的，其余是可选的。</p>
+<h3 id="22-各组件详解">2.2 各组件详解</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>组件</th><th>是否必需</th><th>说明</th><th>对应 GGUF metadata</th></tr></thead><tbody><tr><td><strong>BaseName</strong></td><td>必需</td><td>模型基础架构或名称</td><td><code>general.basename</code></td></tr><tr><td><strong>SizeLabel</strong></td><td>必需</td><td>参数规模（用于排行榜）</td><td><code>general.size_label</code></td></tr><tr><td><strong>FineTune</strong></td><td>可选</td><td>微调目标（如 Chat, Instruct）</td><td><code>general.finetune</code></td></tr><tr><td><strong>Version</strong></td><td>必需</td><td>版本号，格式为 <code>v主版本.次版本</code></td><td><code>general.version</code></td></tr><tr><td><strong>Encoding</strong></td><td>可选</td><td>weight 编码方案（即 quantization type）</td><td><code>general.file_type</code></td></tr><tr><td><strong>Type</strong></td><td>可选</td><td>文件类型（<code>LoRA</code>、<code>vocab</code>）</td><td>-</td></tr><tr><td><strong>Shard</strong></td><td>可选</td><td>分片信息，格式为 <code>XXXXX-of-XXXXX</code></td><td>-</td></tr></tbody></table>
+<h3 id="23-各组件格式细节">2.3 各组件格式细节</h3>
+<p><strong>BaseName</strong></p>
+<p>模型的基础名称，可以包含字母、数字，用 <code>-</code> 连接多个词。</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>Llama-3</span></span>
+<span class="line"><span>Hermes-2-Pro-Llama-3</span></span>
+<span class="line"><span>Mixtral</span></span>
+<span class="line"><span>Phi-3-mini</span></span></code></pre>
+<p><strong>SizeLabel</strong></p>
+<p>参数规模，格式为 <code>&#x3C;数量>&#x3C;单位></code>，支持 MoE 的 <code>专家数x参数量</code> 写法：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>单位</th><th>含义</th></tr></thead><tbody><tr><td><code>Q</code></td><td>Quadrillion（千万亿）</td></tr><tr><td><code>T</code></td><td>Trillion（万亿）</td></tr><tr><td><code>B</code></td><td>Billion（十亿）</td></tr><tr><td><code>M</code></td><td>Million（百万）</td></tr><tr><td><code>K</code></td><td>Thousand（千）</td></tr></tbody></table>
+<p>示例：<code>8B</code>、<code>70B</code>、<code>3.8B</code>、<code>8x7B</code>（MoE，8 个 expert 各 7B）</p>
+<p>在 llama.cpp 中，SizeLabel 由 <code>gguf-py/gguf/utility.py:21-41</code> 自动计算：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="python"><code><span class="line"><span style="color:#F97583">def</span><span style="color:#B392F0"> model_weight_count_rounded_notation</span><span style="color:#E1E4E8">(model_params_count: </span><span style="color:#79B8FF">int</span><span style="color:#E1E4E8">, min_digits: </span><span style="color:#79B8FF">int</span><span style="color:#F97583"> =</span><span style="color:#79B8FF"> 2</span><span style="color:#E1E4E8">) -> </span><span style="color:#79B8FF">str</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#F97583">    if</span><span style="color:#E1E4E8"> model_params_count </span><span style="color:#F97583">></span><span style="color:#79B8FF"> 1e12</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#E1E4E8">        scaled_model_params </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> model_params_count </span><span style="color:#F97583">*</span><span style="color:#79B8FF"> 1e-12</span></span>
+<span class="line"><span style="color:#E1E4E8">        scale_suffix </span><span style="color:#F97583">=</span><span style="color:#9ECBFF"> "T"</span></span>
+<span class="line"><span style="color:#F97583">    elif</span><span style="color:#E1E4E8"> model_params_count </span><span style="color:#F97583">></span><span style="color:#79B8FF"> 1e9</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#E1E4E8">        scaled_model_params </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> model_params_count </span><span style="color:#F97583">*</span><span style="color:#79B8FF"> 1e-9</span></span>
+<span class="line"><span style="color:#E1E4E8">        scale_suffix </span><span style="color:#F97583">=</span><span style="color:#9ECBFF"> "B"</span></span>
+<span class="line"><span style="color:#F97583">    elif</span><span style="color:#E1E4E8"> model_params_count </span><span style="color:#F97583">></span><span style="color:#79B8FF"> 1e6</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#E1E4E8">        scaled_model_params </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> model_params_count </span><span style="color:#F97583">*</span><span style="color:#79B8FF"> 1e-6</span></span>
+<span class="line"><span style="color:#E1E4E8">        scale_suffix </span><span style="color:#F97583">=</span><span style="color:#9ECBFF"> "M"</span></span>
+<span class="line"><span style="color:#F97583">    else</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#E1E4E8">        scaled_model_params </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> model_params_count </span><span style="color:#F97583">*</span><span style="color:#79B8FF"> 1e-3</span></span>
+<span class="line"><span style="color:#E1E4E8">        scale_suffix </span><span style="color:#F97583">=</span><span style="color:#9ECBFF"> "K"</span></span>
+<span class="line"><span style="color:#6A737D">    # ...</span></span>
+<span class="line"><span style="color:#F97583">    return</span><span style="color:#F97583"> f</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF">{</span><span style="color:#E1E4E8">scaled_model_params</span><span style="color:#F97583">:</span><span style="color:#E1E4E8">.</span><span style="color:#79B8FF">{</span><span style="color:#E1E4E8">fix</span><span style="color:#79B8FF">}</span><span style="color:#F97583">f</span><span style="color:#79B8FF">}{</span><span style="color:#E1E4E8">scale_suffix</span><span style="color:#79B8FF">}</span><span style="color:#9ECBFF">"</span></span></code></pre>
+<p>MoE 模型的格式为 <code>专家数x每专家参数量</code>，如 <code>8x7B</code>。</p>
+<p><strong>FineTune</strong></p>
+<p>描述微调目标，常见值：</p>
+<ul>
+<li><code>Instruct</code>：指令遵循微调</li>
+<li><code>Chat</code>：对话微调</li>
+<li><code>Code</code>：代码生成微调</li>
+</ul>
+<p><strong>Version</strong></p>
+<p>版本号，格式为 <code>v主版本.次版本</code>。如果缺省则默认为 <code>v1.0</code>。</p>
+<p><strong>Encoding</strong></p>
+<p>weight 的 quantization scheme，常见值：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Encoding</th><th>含义</th></tr></thead><tbody><tr><td><code>F32</code></td><td>32-bit float（无量化）</td></tr><tr><td><code>F16</code></td><td>16-bit float</td></tr><tr><td><code>BF16</code></td><td>Brain float 16</td></tr><tr><td><code>Q8_0</code></td><td>8-bit 对称量化</td></tr><tr><td><code>Q6_K</code></td><td>6-bit K-quant</td></tr><tr><td><code>Q5_K_M</code></td><td>5-bit K-quant Medium</td></tr><tr><td><code>Q4_K_M</code></td><td>4-bit K-quant Medium</td></tr><tr><td><code>Q4_K_S</code></td><td>4-bit K-quant Small</td></tr><tr><td><code>Q3_K_M</code></td><td>3-bit K-quant Medium</td></tr><tr><td><code>Q2_K</code></td><td>2-bit K-quant</td></tr><tr><td><code>IQ4_XS</code></td><td>4-bit importance-weighted quant</td></tr></tbody></table>
+<p><strong>Shard</strong></p>
+<p>当模型过大需要拆分为多个文件时，使用 5 位数字的分片编号：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>00001-of-00009   ← 第 1 片，共 9 片</span></span>
+<span class="line"><span>00003-of-00009   ← 第 3 片，共 9 片</span></span></code></pre>
+<p>分片编号从 <code>00001</code> 开始（不是 <code>00000</code>）。</p>
+<h3 id="24-完整示例">2.4 完整示例</h3>
+<p><strong><code>Mixtral-8x7B-v0.1-KQ2.gguf</code></strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>组件</th><th>值</th></tr></thead><tbody><tr><td>BaseName</td><td><code>Mixtral</code></td></tr><tr><td>SizeLabel</td><td><code>8x7B</code>（8 experts × 7B params）</td></tr><tr><td>FineTune</td><td>-（无）</td></tr><tr><td>Version</td><td><code>v0.1</code></td></tr><tr><td>Encoding</td><td><code>KQ2</code></td></tr><tr><td>Shard</td><td>-（单文件）</td></tr></tbody></table>
+<p><strong><code>Hermes-2-Pro-Llama-3-8B-F16.gguf</code></strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>组件</th><th>值</th></tr></thead><tbody><tr><td>BaseName</td><td><code>Hermes-2-Pro-Llama-3</code></td></tr><tr><td>SizeLabel</td><td><code>8B</code></td></tr><tr><td>FineTune</td><td>-（无）</td></tr><tr><td>Version</td><td><code>v1.0</code>（缺省默认）</td></tr><tr><td>Encoding</td><td><code>F16</code></td></tr><tr><td>Shard</td><td>-（单文件）</td></tr></tbody></table>
+<p><strong><code>Grok-100B-v1.0-Q4_0-00003-of-00009.gguf</code></strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>组件</th><th>值</th></tr></thead><tbody><tr><td>BaseName</td><td><code>Grok</code></td></tr><tr><td>SizeLabel</td><td><code>100B</code></td></tr><tr><td>FineTune</td><td>-（无）</td></tr><tr><td>Version</td><td><code>v1.0</code></td></tr><tr><td>Encoding</td><td><code>Q4_0</code></td></tr><tr><td>Shard</td><td>第 3 片，共 9 片</td></tr></tbody></table>
+<p><strong><code>Phi-3-mini-3.8B-ContextLength4k-instruct-v1.0.gguf</code></strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>组件</th><th>值</th></tr></thead><tbody><tr><td>BaseName</td><td><code>Phi-3-mini</code></td></tr><tr><td>SizeLabel</td><td><code>3.8B-ContextLength4k</code></td></tr><tr><td>FineTune</td><td><code>instruct</code></td></tr><tr><td>Version</td><td><code>v1.0</code></td></tr><tr><td>Encoding</td><td>-（无，即未量化）</td></tr><tr><td>Shard</td><td>-（单文件）</td></tr></tbody></table>
+<h3 id="25-在-llamacpp-中的实现">2.5 在 llama.cpp 中的实现</h3>
+<p>命名约定的组装逻辑位于 <code>gguf-py/gguf/utility.py:55-75</code>：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="python"><code><span class="line"><span style="color:#F97583">def</span><span style="color:#B392F0"> naming_convention</span><span style="color:#E1E4E8">(model_name, base_name, finetune_string,</span></span>
+<span class="line"><span style="color:#E1E4E8">                      version_string, size_label, output_type,</span></span>
+<span class="line"><span style="color:#E1E4E8">                      model_type</span><span style="color:#F97583">=</span><span style="color:#79B8FF">None</span><span style="color:#E1E4E8">) -> </span><span style="color:#79B8FF">str</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#F97583">    if</span><span style="color:#E1E4E8"> base_name </span><span style="color:#F97583">is</span><span style="color:#F97583"> not</span><span style="color:#79B8FF"> None</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#E1E4E8">        name </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> base_name.strip().replace(</span><span style="color:#9ECBFF">' '</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">'-'</span><span style="color:#E1E4E8">).replace(</span><span style="color:#9ECBFF">'/'</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">'-'</span><span style="color:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#F97583">    elif</span><span style="color:#E1E4E8"> model_name </span><span style="color:#F97583">is</span><span style="color:#F97583"> not</span><span style="color:#79B8FF"> None</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#E1E4E8">        name </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> model_name.strip().replace(</span><span style="color:#9ECBFF">' '</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">'-'</span><span style="color:#E1E4E8">).replace(</span><span style="color:#9ECBFF">'/'</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">'-'</span><span style="color:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#F97583">    else</span><span style="color:#E1E4E8">:</span></span>
+<span class="line"><span style="color:#E1E4E8">        name </span><span style="color:#F97583">=</span><span style="color:#9ECBFF"> "ggml-model"</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#E1E4E8">    parameters </span><span style="color:#F97583">=</span><span style="color:#F97583"> f</span><span style="color:#9ECBFF">"-</span><span style="color:#79B8FF">{</span><span style="color:#E1E4E8">size_label</span><span style="color:#79B8FF">}</span><span style="color:#9ECBFF">"</span><span style="color:#F97583"> if</span><span style="color:#E1E4E8"> size_label </span><span style="color:#F97583">is</span><span style="color:#F97583"> not</span><span style="color:#79B8FF"> None</span><span style="color:#F97583"> else</span><span style="color:#9ECBFF"> ""</span></span>
+<span class="line"><span style="color:#E1E4E8">    finetune   </span><span style="color:#F97583">=</span><span style="color:#F97583"> f</span><span style="color:#9ECBFF">"-</span><span style="color:#79B8FF">{</span><span style="color:#E1E4E8">finetune_string.strip().replace(</span><span style="color:#9ECBFF">' '</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">'-'</span><span style="color:#E1E4E8">)</span><span style="color:#79B8FF">}</span><span style="color:#9ECBFF">"</span><span style="color:#F97583"> if</span><span style="color:#E1E4E8"> finetune_string </span><span style="color:#F97583">is</span><span style="color:#F97583"> not</span><span style="color:#79B8FF"> None</span><span style="color:#F97583"> else</span><span style="color:#9ECBFF"> ""</span></span>
+<span class="line"><span style="color:#E1E4E8">    version    </span><span style="color:#F97583">=</span><span style="color:#F97583"> f</span><span style="color:#9ECBFF">"-</span><span style="color:#79B8FF">{</span><span style="color:#E1E4E8">version_string.strip().replace(</span><span style="color:#9ECBFF">' '</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">'-'</span><span style="color:#E1E4E8">)</span><span style="color:#79B8FF">}</span><span style="color:#9ECBFF">"</span><span style="color:#F97583"> if</span><span style="color:#E1E4E8"> version_string </span><span style="color:#F97583">is</span><span style="color:#F97583"> not</span><span style="color:#79B8FF"> None</span><span style="color:#F97583"> else</span><span style="color:#9ECBFF"> ""</span></span>
+<span class="line"><span style="color:#E1E4E8">    encoding   </span><span style="color:#F97583">=</span><span style="color:#F97583"> f</span><span style="color:#9ECBFF">"-</span><span style="color:#79B8FF">{</span><span style="color:#E1E4E8">output_type.strip().replace(</span><span style="color:#9ECBFF">' '</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">'-'</span><span style="color:#E1E4E8">).upper()</span><span style="color:#79B8FF">}</span><span style="color:#9ECBFF">"</span><span style="color:#F97583"> if</span><span style="color:#E1E4E8"> output_type </span><span style="color:#F97583">is</span><span style="color:#F97583"> not</span><span style="color:#79B8FF"> None</span><span style="color:#F97583"> else</span><span style="color:#9ECBFF"> ""</span></span>
+<span class="line"><span style="color:#E1E4E8">    kind       </span><span style="color:#F97583">=</span><span style="color:#F97583"> f</span><span style="color:#9ECBFF">"-</span><span style="color:#79B8FF">{</span><span style="color:#E1E4E8">model_type.strip().replace(</span><span style="color:#9ECBFF">' '</span><span style="color:#E1E4E8">, </span><span style="color:#9ECBFF">'-'</span><span style="color:#E1E4E8">)</span><span style="color:#79B8FF">}</span><span style="color:#9ECBFF">"</span><span style="color:#F97583"> if</span><span style="color:#E1E4E8"> model_type </span><span style="color:#F97583">is</span><span style="color:#F97583"> not</span><span style="color:#79B8FF"> None</span><span style="color:#F97583"> else</span><span style="color:#9ECBFF"> ""</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">    return</span><span style="color:#F97583"> f</span><span style="color:#9ECBFF">"</span><span style="color:#79B8FF">{</span><span style="color:#E1E4E8">name</span><span style="color:#79B8FF">}{</span><span style="color:#E1E4E8">parameters</span><span style="color:#79B8FF">}{</span><span style="color:#E1E4E8">finetune</span><span style="color:#79B8FF">}{</span><span style="color:#E1E4E8">version</span><span style="color:#79B8FF">}{</span><span style="color:#E1E4E8">encoding</span><span style="color:#79B8FF">}{</span><span style="color:#E1E4E8">kind</span><span style="color:#79B8FF">}</span><span style="color:#9ECBFF">"</span></span></code></pre>
+<p>各字段的值来自 GGUF 文件内部的 metadata KV（如 <code>general.basename</code>、<code>general.size_label</code>、<code>general.finetune</code>、<code>general.version</code>），这些 metadata 在 <code>convert_hf_to_gguf.py</code> 转换模型时自动填入。</p>
+<h2 id="三quantization">三、Quantization</h2>
+<h3 id="31-q8_0">3.1 Q8_0</h3>
+<h4 id="核心思想">核心思想</h4>
+<p>Q8_0 是 llama.cpp 中最简单直观的 quantization scheme。它是一种 <strong>symmetric（对称）block quantization</strong>，将 FP32 weight 压缩为 int8：</p>
+<p>$x \approx d \times q$</p>
+<p>其中 $d$ 是 scale factor（缩放因子），$q$ 是 quantized 后的 int8 值。</p>
+<h4 id="数据结构">数据结构</h4>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">#define</span><span style="color:#B392F0"> QK8_0</span><span style="color:#79B8FF"> 32</span></span>
+<span class="line"><span style="color:#F97583">typedef</span><span style="color:#F97583"> struct</span><span style="color:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#E1E4E8">    ggml_half d;</span><span style="color:#6A737D">       // delta (scale factor), FP16</span></span>
+<span class="line"><span style="color:#F97583">    int8_t</span><span style="color:#FFAB70">  qs</span><span style="color:#E1E4E8">[QK8_0];</span><span style="color:#6A737D"> // quantized values</span></span>
+<span class="line"><span style="color:#E1E4E8">} block_q8_0;</span></span></code></pre>
+<p>每个 block 包含 <strong>32 个 weight (固定)</strong>：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>字段</th><th>大小</th><th>说明</th></tr></thead><tbody><tr><td><code>d</code></td><td>2 bytes (FP16)</td><td>该 block 的 scale factor</td></tr><tr><td><code>qs[32]</code></td><td>32 bytes (int8 × 32)</td><td>32 个 quantized weight</td></tr></tbody></table>
+<p>总大小 34 bytes 存储 32 个 weight，平均每个 weight 约 <strong>8.5 bits</strong>（对比 FP32 的 32 bits）。</p>
+<h4 id="quantization-过程">Quantization 过程</h4>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">void</span><span style="color:#B392F0"> quantize_row_q8_0_ref</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">const</span><span style="color:#F97583"> float</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> x</span><span style="color:#E1E4E8">, block_q8_0 </span><span style="color:#F97583">*</span><span style="color:#FFAB70"> y</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">int64_t</span><span style="color:#FFAB70"> k</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#F97583">    const</span><span style="color:#F97583"> int</span><span style="color:#E1E4E8"> nb </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> k </span><span style="color:#F97583">/</span><span style="color:#E1E4E8"> QK8_0;</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">    for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> i </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; i </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> nb; i</span><span style="color:#F97583">++</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#6A737D">        // Step 1: 找 block 内绝对值最大值</span></span>
+<span class="line"><span style="color:#F97583">        float</span><span style="color:#E1E4E8"> amax </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0.0</span><span style="color:#F97583">f</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#F97583">        for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> j </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; j </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> QK8_0; j</span><span style="color:#F97583">++</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#E1E4E8">            amax </span><span style="color:#F97583">=</span><span style="color:#B392F0"> MAX</span><span style="color:#E1E4E8">(amax, </span><span style="color:#B392F0">fabsf</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">x</span><span style="color:#E1E4E8">[i</span><span style="color:#F97583">*</span><span style="color:#E1E4E8">QK8_0 </span><span style="color:#F97583">+</span><span style="color:#E1E4E8"> j]));</span></span>
+<span class="line"><span style="color:#E1E4E8">        }</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D">        // Step 2: 计算 scale factor</span></span>
+<span class="line"><span style="color:#F97583">        const</span><span style="color:#F97583"> float</span><span style="color:#E1E4E8"> d  </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> amax </span><span style="color:#F97583">/</span><span style="color:#79B8FF"> 127</span><span style="color:#E1E4E8">;</span><span style="color:#6A737D">   // 127 = 2^7 - 1</span></span>
+<span class="line"><span style="color:#F97583">        const</span><span style="color:#F97583"> float</span><span style="color:#E1E4E8"> id </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> d </span><span style="color:#F97583">?</span><span style="color:#79B8FF"> 1.0</span><span style="color:#F97583">f/</span><span style="color:#E1E4E8">d </span><span style="color:#F97583">:</span><span style="color:#79B8FF"> 0.0</span><span style="color:#F97583">f</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D">        // Step 3: 存储 scale (FP32 → FP16)</span></span>
+<span class="line"><span style="color:#FFAB70">        y</span><span style="color:#E1E4E8">[i].d </span><span style="color:#F97583">=</span><span style="color:#B392F0"> GGML_FP32_TO_FP16</span><span style="color:#E1E4E8">(d);</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D">        // Step 4: 量化每个 weight</span></span>
+<span class="line"><span style="color:#F97583">        for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> j </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; j </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> QK8_0; </span><span style="color:#F97583">++</span><span style="color:#E1E4E8">j) {</span></span>
+<span class="line"><span style="color:#FFAB70">            y</span><span style="color:#E1E4E8">[i].qs[j] </span><span style="color:#F97583">=</span><span style="color:#B392F0"> roundf</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">x</span><span style="color:#E1E4E8">[i</span><span style="color:#F97583">*</span><span style="color:#E1E4E8">QK8_0 </span><span style="color:#F97583">+</span><span style="color:#E1E4E8"> j] </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> id);</span></span>
+<span class="line"><span style="color:#E1E4E8">        }</span></span>
+<span class="line"><span style="color:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#E1E4E8">}</span></span></code></pre>
+<p><strong>举例</strong>：假设 block 中绝对值最大的是 3.5</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>d  = 3.5 / 127 ≈ 0.02756</span></span>
+<span class="line"><span>id = 1 / d      ≈ 36.286</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>原始值  2.1 → round(2.1 × 36.286)  = 76    → 还原: 76 × 0.02756 ≈ 2.095</span></span>
+<span class="line"><span>原始值 -1.0 → round(-1.0 × 36.286) = -36   → 还原: -36 × 0.02756 ≈ -0.992</span></span>
+<span class="line"><span>原始值  3.5 → round(3.5 × 36.286)  = 127   → 还原: 127 × 0.02756 ≈ 3.500</span></span></code></pre>
+<h4 id="dequantization-过程">Dequantization 过程</h4>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">void</span><span style="color:#B392F0"> dequantize_row_q8_0</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">const</span><span style="color:#E1E4E8"> block_q8_0 </span><span style="color:#F97583">*</span><span style="color:#FFAB70"> x</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">float</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> y</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">int64_t</span><span style="color:#FFAB70"> k</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#F97583">    for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> i </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; i </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> nb; i</span><span style="color:#F97583">++</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#F97583">        const</span><span style="color:#F97583"> float</span><span style="color:#E1E4E8"> d </span><span style="color:#F97583">=</span><span style="color:#B392F0"> GGML_FP16_TO_FP32</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">x</span><span style="color:#E1E4E8">[i].d);</span></span>
+<span class="line"><span style="color:#F97583">        for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> j </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; j </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> QK8_0; </span><span style="color:#F97583">++</span><span style="color:#E1E4E8">j) {</span></span>
+<span class="line"><span style="color:#FFAB70">            y</span><span style="color:#E1E4E8">[i</span><span style="color:#F97583">*</span><span style="color:#E1E4E8">QK8_0 </span><span style="color:#F97583">+</span><span style="color:#E1E4E8"> j] </span><span style="color:#F97583">=</span><span style="color:#FFAB70"> x</span><span style="color:#E1E4E8">[i].qs[j] </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> d;</span></span>
+<span class="line"><span style="color:#E1E4E8">        }</span></span>
+<span class="line"><span style="color:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#E1E4E8">}</span></span></code></pre>
+<h4 id="量化域直接-dot-product">量化域直接 Dot Product</h4>
+<p>LLM inference 的核心是 matrix multiplication，而其核心是 vector dot product。Q8_0 可以<strong>直接在 quantized 域计算</strong>，无需先 dequantize：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">void</span><span style="color:#B392F0"> ggml_vec_dot_q8_0_q8_0</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">int</span><span style="color:#FFAB70"> n</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">float</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> s</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">const</span><span style="color:#F97583"> void</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> vx</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">const</span><span style="color:#F97583"> void</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> vy</span><span style="color:#E1E4E8">, ...) {</span></span>
+<span class="line"><span style="color:#F97583">    const</span><span style="color:#E1E4E8"> block_q8_0 </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> x </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> vx;</span></span>
+<span class="line"><span style="color:#F97583">    const</span><span style="color:#E1E4E8"> block_q8_0 </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> y </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> vy;</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">    float</span><span style="color:#E1E4E8"> sumf </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#F97583">    for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> ib </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; ib </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> nb; </span><span style="color:#F97583">++</span><span style="color:#E1E4E8">ib) {</span></span>
+<span class="line"><span style="color:#F97583">        int</span><span style="color:#E1E4E8"> sumi </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#F97583">        for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> j </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; j </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> QK8_0; j</span><span style="color:#F97583">++</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#E1E4E8">            sumi </span><span style="color:#F97583">+=</span><span style="color:#FFAB70"> x</span><span style="color:#E1E4E8">[ib].qs[j] </span><span style="color:#F97583">*</span><span style="color:#FFAB70"> y</span><span style="color:#E1E4E8">[ib].qs[j];</span><span style="color:#6A737D">  // 整数乘加</span></span>
+<span class="line"><span style="color:#E1E4E8">        }</span></span>
+<span class="line"><span style="color:#E1E4E8">        sumf </span><span style="color:#F97583">+=</span><span style="color:#E1E4E8"> sumi </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> (</span><span style="color:#B392F0">FP16_TO_FP32</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">x</span><span style="color:#E1E4E8">[ib].d) </span><span style="color:#F97583">*</span><span style="color:#B392F0"> FP16_TO_FP32</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">y</span><span style="color:#E1E4E8">[ib].d));</span></span>
+<span class="line"><span style="color:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#F97583">    *</span><span style="color:#E1E4E8">s </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> sumf;</span></span>
+<span class="line"><span style="color:#E1E4E8">}</span></span></code></pre>
+<p>数学原理：</p>
+<p>$$\sum_i x_i y_i \approx \sum_i (d_x q_{x,i})(d_y q_{y,i}) = d_x d_y \sum_i q_{x,i} q_{y,i}$$</p>
+<p>内层循环是纯整数乘加，可以被 SIMD 指令（AVX2、ARM NEON）高度并行化。每个 block 仅需一次浮点乘法。</p>
+<blockquote>
+<h4 id="为什么-block-size-是-32">为什么 Block Size 是 32 ?</h4>
+<p>32 是硬编码的设计常量，不可运行时更改。这个数字是多方面权衡的结果：</p>
+<ul>
+<li><strong>精度 vs 开销</strong>：block 越小，每个 block 的 scale factor 能更好地适应局部数据分布，quantization error 越小；但 2 bytes 的 scale 摊到更少的 weight 上，overhead 比例越大</li>
+<li><strong>SIMD 对齐</strong>：32 × int8 = 256 bits = 一个 AVX2 register 的宽度 = 两个 ARM NEON register 的宽度</li>
+</ul>
+<p>不同 quantization family 使用不同的 block size：基础类型（Q4_0/Q5_0/Q8_0 等）用 32，K-quant 家族（Q2_K ~ Q6_K）用 256 作为 super-block size。</p>
+</blockquote>
+<h3 id="32-k-quant分层-quantization">3.2 K-quant：分层 Quantization</h3>
+<p>以 Q4_K 为例</p>
+<h4 id="从-q8_0-到-q4_k-的跃升">从 Q8_0 到 Q4_K 的跃升</h4>
+<p>Q4_K 属于 <strong>K-quant</strong> 家族，引入两个关键升级：</p>
+<ol>
+<li><strong>两级（分层）quantization</strong>：256 weight 的 super-block 内分为 8 个 sub-block（各 32 weight），每层有独立的 scale</li>
+<li><strong>Asymmetric（非对称）quantization</strong>：不仅有 scale，还有 min（最小值偏移）</li>
+</ol>
+<h4 id="数据结构-1">数据结构</h4>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">#define</span><span style="color:#B392F0"> QK_K</span><span style="color:#79B8FF"> 256</span></span>
+<span class="line"><span style="color:#F97583">#define</span><span style="color:#B392F0"> K_SCALE_SIZE</span><span style="color:#79B8FF"> 12</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">typedef</span><span style="color:#F97583"> struct</span><span style="color:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#E1E4E8">    ggml_half d;</span><span style="color:#6A737D">            // super-block scale for quantized scales</span></span>
+<span class="line"><span style="color:#E1E4E8">    ggml_half dmin;</span><span style="color:#6A737D">         // super-block scale for quantized mins</span></span>
+<span class="line"><span style="color:#F97583">    uint8_t</span><span style="color:#FFAB70"> scales</span><span style="color:#E1E4E8">[</span><span style="color:#79B8FF">12</span><span style="color:#E1E4E8">];</span><span style="color:#6A737D">     // 8 组 sub-block 的 scale 和 min, 6-bit 量化后打包</span></span>
+<span class="line"><span style="color:#F97583">    uint8_t</span><span style="color:#FFAB70"> qs</span><span style="color:#E1E4E8">[QK_K</span><span style="color:#F97583">/</span><span style="color:#79B8FF">2</span><span style="color:#E1E4E8">];</span><span style="color:#6A737D">    // 256 个 4-bit quant, 两两共享一个 byte</span></span>
+<span class="line"><span style="color:#E1E4E8">} block_q4_K;</span></span></code></pre>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>字段</th><th>大小</th><th>说明</th></tr></thead><tbody><tr><td><code>d</code></td><td>2 bytes (FP16)</td><td>super-block 级 scale 的 scale（“scale 的 scale”）</td></tr><tr><td><code>dmin</code></td><td>2 bytes (FP16)</td><td>super-block 级 min 的 scale（“min 的 scale”）</td></tr><tr><td><code>scales[12]</code></td><td>12 bytes</td><td>8 个 sub-block 各自的 scale 和 min，6-bit 打包</td></tr><tr><td><code>qs[128]</code></td><td>128 bytes</td><td>256 个 4-bit weight，两个共享一个 byte</td></tr></tbody></table>
+<p>总大小 144 bytes / 256 weights = <strong>4.5 bits/weight</strong>。</p>
+<h4 id="三层嵌套结构">三层嵌套结构</h4>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>第 1 层 (顶层):  d, dmin — FP16 直接存储</span></span>
+<span class="line"><span>                    ↓ 用于还原第 2 层</span></span>
+<span class="line"><span>第 2 层 (中间):  8 个 sub-block 的 float scale/min</span></span>
+<span class="line"><span>                 → 量化为 6-bit unsigned int (0~63)</span></span>
+<span class="line"><span>                    ↓ 用于还原第 3 层</span></span>
+<span class="line"><span>第 3 层 (底层):  256 个 float weight</span></span>
+<span class="line"><span>                 → 量化为 4-bit unsigned int (0~15)</span></span></code></pre>
+<p>Dequantization 公式：</p>
+<p>$$\text{weight} \approx d \times sc_j \times q_i - d_{min} \times m_j$$</p>
+<p>其中：</p>
+<ul>
+<li>$d$ = super-block scale (FP16)</li>
+<li>$d_{min}$ = super-block min scale (FP16)</li>
+<li>$sc_j$ = 第 j 个 sub-block 的 quantized scale (6-bit, 范围 0~63)</li>
+<li>$m_j$ = 第 j 个 sub-block 的 quantized min (6-bit, 范围 0~63)</li>
+<li>$q_i$ = 具体 weight 的 quantized value (4-bit, 范围 0~15)</li>
+</ul>
+<h4 id="为什么要两级-quantization">为什么要两级 Quantization</h4>
+<p>如果每个 sub-block（32 weights）都用一个完整 FP16 存 scale 和 min：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>8 sub-blocks × 2 值 (scale+min) × 2 bytes (FP16) = 32 bytes metadata</span></span></code></pre>
+<p>通过把 8 个 sub-block 的 scale/min 也做一次 quantization（压缩为 6-bit），再用 2 个 FP16（<code>d</code> 和 <code>dmin</code>）来还原它们：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>2 bytes (d) + 2 bytes (dmin) + 12 bytes (8×scale + 8×min, 各 6-bit) = 16 bytes metadata</span></span></code></pre>
+<p>Metadata 从 32 bytes 压缩到 16 bytes，节省了一半，同时 sub-block 级别的局部适应性依然保留。</p>
+<h4 id="6-bit-的-bit-packing">6-bit 的 Bit Packing</h4>
+<p>8 个 scale (6-bit) + 8 个 min (6-bit) = 96 bits = 12 bytes。代码通过精巧的 bit packing 将它们紧凑存储：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">static</span><span style="color:#F97583"> inline</span><span style="color:#F97583"> void</span><span style="color:#B392F0"> get_scale_min_k4</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">int</span><span style="color:#FFAB70"> j</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">const</span><span style="color:#F97583"> uint8_t</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> q</span><span style="color:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#F97583">                                     uint8_t</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> d</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">uint8_t</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> m</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#F97583">    if</span><span style="color:#E1E4E8"> (j </span><span style="color:#F97583">&#x3C;</span><span style="color:#79B8FF"> 4</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#F97583">        *</span><span style="color:#E1E4E8">d </span><span style="color:#F97583">=</span><span style="color:#FFAB70"> q</span><span style="color:#E1E4E8">[j] </span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF"> 63</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#F97583">        *</span><span style="color:#E1E4E8">m </span><span style="color:#F97583">=</span><span style="color:#FFAB70"> q</span><span style="color:#E1E4E8">[j </span><span style="color:#F97583">+</span><span style="color:#79B8FF"> 4</span><span style="color:#E1E4E8">] </span><span style="color:#F97583">&#x26;</span><span style="color:#79B8FF"> 63</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#E1E4E8">    } </span><span style="color:#F97583">else</span><span style="color:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#F97583">        *</span><span style="color:#E1E4E8">d </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> (</span><span style="color:#FFAB70">q</span><span style="color:#E1E4E8">[j</span><span style="color:#F97583">+</span><span style="color:#79B8FF">4</span><span style="color:#E1E4E8">] </span><span style="color:#F97583">&#x26;</span><span style="color:#F97583"> 0x</span><span style="color:#79B8FF">F</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">|</span><span style="color:#E1E4E8"> ((</span><span style="color:#FFAB70">q</span><span style="color:#E1E4E8">[j</span><span style="color:#F97583">-</span><span style="color:#79B8FF">4</span><span style="color:#E1E4E8">] </span><span style="color:#F97583">>></span><span style="color:#79B8FF"> 6</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">&#x3C;&#x3C;</span><span style="color:#79B8FF"> 4</span><span style="color:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#F97583">        *</span><span style="color:#E1E4E8">m </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> (</span><span style="color:#FFAB70">q</span><span style="color:#E1E4E8">[j</span><span style="color:#F97583">+</span><span style="color:#79B8FF">4</span><span style="color:#E1E4E8">] </span><span style="color:#F97583">>></span><span style="color:#79B8FF">  4</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">|</span><span style="color:#E1E4E8"> ((</span><span style="color:#FFAB70">q</span><span style="color:#E1E4E8">[j</span><span style="color:#F97583">-</span><span style="color:#79B8FF">0</span><span style="color:#E1E4E8">] </span><span style="color:#F97583">>></span><span style="color:#79B8FF"> 6</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">&#x3C;&#x3C;</span><span style="color:#79B8FF"> 4</span><span style="color:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#E1E4E8">}</span></span></code></pre>
+<p>前 4 个 sub-block 的 scale/min 直接存在低 6 位；后 4 个的则拆成低 4 位和高 2 位分别存放在不同的 byte 中。</p>
+<h4 id="dequantization-代码">Dequantization 代码</h4>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">void</span><span style="color:#B392F0"> dequantize_row_q4_K</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">const</span><span style="color:#E1E4E8"> block_q4_K </span><span style="color:#F97583">*</span><span style="color:#FFAB70"> x</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">float</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> y</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">int64_t</span><span style="color:#FFAB70"> k</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#F97583">    for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> i </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; i </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> nb; i</span><span style="color:#F97583">++</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#F97583">        const</span><span style="color:#F97583"> float</span><span style="color:#E1E4E8"> d   </span><span style="color:#F97583">=</span><span style="color:#B392F0"> GGML_FP16_TO_FP32</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">x</span><span style="color:#E1E4E8">[i].d);</span></span>
+<span class="line"><span style="color:#F97583">        const</span><span style="color:#F97583"> float</span><span style="color:#E1E4E8"> min </span><span style="color:#F97583">=</span><span style="color:#B392F0"> GGML_FP16_TO_FP32</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">x</span><span style="color:#E1E4E8">[i].dmin);</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#F97583">        for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> j </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; j </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> QK_K; j </span><span style="color:#F97583">+=</span><span style="color:#79B8FF"> 64</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#B392F0">            get_scale_min_k4</span><span style="color:#E1E4E8">(is, </span><span style="color:#FFAB70">x</span><span style="color:#E1E4E8">[i].scales, </span><span style="color:#F97583">&#x26;</span><span style="color:#E1E4E8">sc, </span><span style="color:#F97583">&#x26;</span><span style="color:#E1E4E8">m);</span></span>
+<span class="line"><span style="color:#F97583">            const</span><span style="color:#F97583"> float</span><span style="color:#E1E4E8"> d1 </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> d </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> sc;</span></span>
+<span class="line"><span style="color:#F97583">            const</span><span style="color:#F97583"> float</span><span style="color:#E1E4E8"> m1 </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> min </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> m;</span></span>
+<span class="line"><span style="color:#F97583">            for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> l </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; l </span><span style="color:#F97583">&#x3C;</span><span style="color:#79B8FF"> 32</span><span style="color:#E1E4E8">; </span><span style="color:#F97583">++</span><span style="color:#E1E4E8">l)</span></span>
+<span class="line"><span style="color:#F97583">                *</span><span style="color:#E1E4E8">y</span><span style="color:#F97583">++</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> d1 </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> (</span><span style="color:#FFAB70">q</span><span style="color:#E1E4E8">[l] </span><span style="color:#F97583">&#x26;</span><span style="color:#F97583"> 0x</span><span style="color:#79B8FF">F</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-</span><span style="color:#E1E4E8"> m1;</span><span style="color:#6A737D">   // 低 4 位</span></span>
+<span class="line"><span style="color:#F97583">            for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> l </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; l </span><span style="color:#F97583">&#x3C;</span><span style="color:#79B8FF"> 32</span><span style="color:#E1E4E8">; </span><span style="color:#F97583">++</span><span style="color:#E1E4E8">l)</span></span>
+<span class="line"><span style="color:#F97583">                *</span><span style="color:#E1E4E8">y</span><span style="color:#F97583">++</span><span style="color:#F97583"> =</span><span style="color:#E1E4E8"> d2 </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> (</span><span style="color:#FFAB70">q</span><span style="color:#E1E4E8">[l] </span><span style="color:#F97583">>></span><span style="color:#79B8FF"> 4</span><span style="color:#E1E4E8">) </span><span style="color:#F97583">-</span><span style="color:#E1E4E8"> m2;</span><span style="color:#6A737D">     // 高 4 位</span></span>
+<span class="line"><span style="color:#E1E4E8">        }</span></span>
+<span class="line"><span style="color:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#E1E4E8">}</span></span></code></pre>
+<h3 id="33-mixed-precision-策略q4_k_s-与-q4_k_m">3.3 Mixed-Precision 策略：Q4_K_S 与 Q4_K_M</h3>
+<p><strong>同一格式，不同策略:</strong></p>
+<p>Q4_K_S 和 Q4_K_M 在底层使用<strong>完全相同的 <code>GGML_TYPE_Q4_K</code> 数据格式</strong>——block 结构、quantization 算法一模一样。</p>
+<p>它们的区别在于：对模型中不同类型的 tensor 使用不同 bit 数的 <strong>mixed-precision（混合精度）策略</strong>。</p>
+<ul>
+<li><strong>S = Small</strong>：尽量小，只对最关键的少量 tensor 升级精度</li>
+<li><strong>M = Medium</strong>：稍大一些，对更多敏感 tensor 使用更高精度</li>
+</ul>
+<h4 id="哪些-layer-更重要">哪些 Layer 更重要</h4>
+<p>llama.cpp 用 <code>use_more_bits</code> 函数判断哪些 layer 对模型质量更关键：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#E1E4E8">auto use_more_bits </span><span style="color:#F97583">=</span><span style="color:#F97583"> []</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> i_layer, </span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> n_layers) </span><span style="color:#F97583">-></span><span style="color:#F97583"> bool</span><span style="color:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#F97583">    return</span><span style="color:#E1E4E8"> i_layer </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> n_layers</span><span style="color:#F97583">/</span><span style="color:#79B8FF">8</span><span style="color:#6A737D">         // 前 1/8 层</span></span>
+<span class="line"><span style="color:#F97583">        ||</span><span style="color:#E1E4E8"> i_layer </span><span style="color:#F97583">>=</span><span style="color:#79B8FF"> 7</span><span style="color:#F97583">*</span><span style="color:#E1E4E8">n_layers</span><span style="color:#F97583">/</span><span style="color:#79B8FF">8</span><span style="color:#6A737D">      // 后 1/8 层</span></span>
+<span class="line"><span style="color:#F97583">        ||</span><span style="color:#E1E4E8"> (i_layer </span><span style="color:#F97583">-</span><span style="color:#E1E4E8"> n_layers</span><span style="color:#F97583">/</span><span style="color:#79B8FF">8</span><span style="color:#E1E4E8">)</span><span style="color:#F97583">%</span><span style="color:#79B8FF">3</span><span style="color:#F97583"> ==</span><span style="color:#79B8FF"> 2</span><span style="color:#E1E4E8">;</span><span style="color:#6A737D">  // 中间每隔 3 层取 1 层</span></span>
+<span class="line"><span style="color:#E1E4E8">};</span></span></code></pre>
+<p>这些位置的 tensor 对 perplexity 影响更大，值得分配更多 bits。</p>
+<h4 id="对比">对比</h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>Q4_K_S</th><th>Q4_K_M</th></tr></thead><tbody><tr><td>Default type</td><td>Q4_K</td><td>Q4_K</td></tr><tr><td>attention_v 升级</td><td>前 4 层 → Q5_K</td><td><code>use_more_bits</code> 位置 → <strong>Q6_K</strong></td></tr><tr><td>ffn_down 升级</td><td>前 1/8 层 → Q5_K</td><td><code>use_more_bits</code> 位置 → Q5_K/Q6_K</td></tr><tr><td>attention_qkv 升级</td><td>不升级</td><td>→ Q5_K</td></tr><tr><td>模型大小 (7B 参数)</td><td>~3.6 GB</td><td>~3.8 GB</td></tr><tr><td>Perplexity</td><td>略高（略差）</td><td>略低（略好）</td></tr></tbody></table>
+<p><strong>Q4_K_M 是 llama.cpp 的默认推荐选项</strong>。</p>
+<h3 id="34-activation-quantization-on-the-fly">3.4 Activation Quantization: On-the-fly</h3>
+<h4 id="weight-和-activation-的格式不匹配">Weight 和 Activation 的格式不匹配</h4>
+<p>LLM inference 的核心运算是 $\text{output} = \text{weight} \times \text{activation}$：</p>
+<ul>
+<li><strong>Weight</strong>（<code>src0</code>）：提前 quantize 好（如 Q4_K），存储在 GGUF 文件中</li>
+<li><strong>Activation</strong>（<code>src1</code>）：每次 inference 时动态计算出来的中间结果，通常是 <strong>FP32</strong></li>
+</ul>
+<p>两者格式不同，无法直接做 dot product。</p>
+<h4 id="临时量化-activation">临时量化 Activation</h4>
+<p>llama.cpp 的做法是：在 matrix multiplication 前，将 FP32 activation <strong>on-the-fly</strong> 量化为兼容的 int8 格式，用完即丢。</p>
+<p>每种 weight type 都注册了与之配对的 activation type：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#E1E4E8">[GGML_TYPE_Q4_0] </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> { .vec_dot_type </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> GGML_TYPE_Q8_0 },</span></span>
+<span class="line"><span style="color:#E1E4E8">[GGML_TYPE_Q4_1] </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> { .vec_dot_type </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> GGML_TYPE_Q8_1 },</span></span>
+<span class="line"><span style="color:#E1E4E8">[GGML_TYPE_Q4_K] </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> { .vec_dot_type </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> GGML_TYPE_Q8_K },</span></span>
+<span class="line"><span style="color:#E1E4E8">[GGML_TYPE_Q5_K] </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> { .vec_dot_type </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> GGML_TYPE_Q8_K },</span></span>
+<span class="line"><span style="color:#E1E4E8">[GGML_TYPE_Q6_K] </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> { .vec_dot_type </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> GGML_TYPE_Q8_K },</span></span></code></pre>
+<p>规律很清晰：</p>
+<ul>
+<li>基础 quantization（Q4_0/Q5_0/Q8_0）配对 <strong>Q8_0</strong></li>
+<li>K-quant 家族（Q2_K ~ Q6_K）配对 <strong>Q8_K</strong></li>
+</ul>
+<h4 id="核心代码流程">核心代码流程</h4>
+<p>在 <code>ggml_compute_forward_mul_mat</code> 中：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#6A737D">// 1. 根据 weight type 查表得到配对的 activation type</span></span>
+<span class="line"><span style="color:#F97583">enum</span><span style="color:#E1E4E8"> ggml_type    vec_dot_type </span><span style="color:#F97583">=</span><span style="color:#FFAB70"> type_traits_cpu</span><span style="color:#E1E4E8">[src0->type].vec_dot_type;</span></span>
+<span class="line"><span style="color:#79B8FF">ggml_from_float_t</span><span style="color:#E1E4E8"> from_float   </span><span style="color:#F97583">=</span><span style="color:#FFAB70"> type_traits_cpu</span><span style="color:#E1E4E8">[vec_dot_type].from_float;</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D">// 2. 如果 activation 不是目标类型，执行 on-the-fly quantization</span></span>
+<span class="line"><span style="color:#F97583">if</span><span style="color:#E1E4E8"> (src1</span><span style="color:#F97583">-></span><span style="color:#E1E4E8">type </span><span style="color:#F97583">!=</span><span style="color:#E1E4E8"> vec_dot_type) {</span></span>
+<span class="line"><span style="color:#B392F0">    GGML_ASSERT</span><span style="color:#E1E4E8">(src1->type </span><span style="color:#F97583">==</span><span style="color:#E1E4E8"> GGML_TYPE_F32);</span><span style="color:#6A737D">  // activation 必须是 FP32</span></span>
+<span class="line"><span style="color:#6A737D">    // 在临时 buffer 中: FP32 activation → Q8_K</span></span>
+<span class="line"><span style="color:#B392F0">    from_float</span><span style="color:#E1E4E8">(src1_data, wdata_buffer, count);</span></span>
+<span class="line"><span style="color:#E1E4E8">}</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D">// 3. 两个 quantized tensor 做整数 dot product</span></span>
+<span class="line"><span style="color:#B392F0">ggml_vec_dot_q4_K_q8_K</span><span style="color:#E1E4E8">(n, </span><span style="color:#F97583">&#x26;</span><span style="color:#FFAB70">result</span><span style="color:#E1E4E8">, weight_q4k, activation_q8k, ...);</span></span></code></pre>
+<h4 id="流程图">流程图</h4>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>Weight (GGUF 文件, Q4_K)       Activation (运行时计算, FP32)</span></span>
+<span class="line"><span>       │                              │</span></span>
+<span class="line"><span>       │  (离线 quantize)     from_float() — on-the-fly quantize</span></span>
+<span class="line"><span>       │                              │</span></span>
+<span class="line"><span>       ▼                              ▼</span></span>
+<span class="line"><span>  block_q4_K                     block_q8_K</span></span>
+<span class="line"><span>       \                            /</span></span>
+<span class="line"><span>        \                          /</span></span>
+<span class="line"><span>      ggml_vec_dot_q4_K_q8_K()  ← 整数 dot product</span></span>
+<span class="line"><span>                  │</span></span>
+<span class="line"><span>                  ▼</span></span>
+<span class="line"><span>          float result (FP32)</span></span></code></pre>
+<blockquote>
+<h4 id="为什么-activation-用-q8-而不是-q4">为什么 Activation 用 Q8 而不是 Q4</h4>
+<ul>
+<li><strong>Activation 对精度更敏感</strong>：weight 分布相对稳定，可以用低 bit；activation 随 input 变化剧烈，需要更高精度防止 error 累积</li>
+<li><strong>Q8 quantization 极快</strong>：算法极其简单（找 max → 除 → round），几乎无额外计算开销</li>
+<li><strong>整数 dot product 仍然高效</strong>：<code>int8 × int4</code> 的运算在 SIMD 上仍远快于 <code>float × float</code></li>
+</ul>
+</blockquote>
+<h3 id="35-总结">3.5 总结</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>类型</th><th>Bits/Weight</th><th>Block Size</th><th>Quantization 类型</th><th>Scale 层数</th></tr></thead><tbody><tr><td>FP32</td><td>32</td><td>-</td><td>-</td><td>-</td></tr><tr><td>FP16</td><td>16</td><td>-</td><td>-</td><td>-</td></tr><tr><td>Q8_0</td><td>~8.5</td><td>32</td><td>Symmetric</td><td>1 层</td></tr><tr><td>Q4_K (K-quant)</td><td>~4.5</td><td>256 / 32</td><td>Asymmetric</td><td>2 层</td></tr><tr><td>Q2_K (K-quant)</td><td>~2.6</td><td>256 / 16</td><td>Asymmetric</td><td>2 层</td></tr></tbody></table>
+<h2 id="四评估-quantization-质量">四、评估 Quantization 质量</h2>
+<h3 id="41-perplexityppl">4.1 Perplexity(PPL)</h3>
+<p>Perplexity（困惑度）是衡量语言模型质量<strong>最常用最基础</strong>的指标。直觉上，它衡量的是：<strong>模型对下一个 token 的”困惑”程度</strong>。PPL 越低，说明模型预测下一个 token 的能力越强，模型质量越好。</p>
+<p>数学定义：</p>
+<p>$$\text{PPL} = \exp\left(-\frac{1}{N}\sum_{i=1}^{N}\log P(t_i \mid t_1, …, t_{i-1})\right)$$</p>
+<p>即 negative log-likelihood（NLL）的平均值，再取指数。</p>
+<p>拆解为三步：</p>
+<ol>
+<li>对每个 token $t_i$，模型给出给定前文后该 token 的概率 $P(t_i | t_1,…,t_{i-1})$</li>
+<li>取 $-\log P$，得到 negative log-likelihood（NLL），概率越低值越大</li>
+<li>对所有 token 的 NLL 取平均，再 $\exp()$ 回去</li>
+</ol>
+<p><strong>直觉理解</strong>：如果 PPL = 6，可以粗略地理解为模型在每个位置”犹豫”于大约 6 个等概率的候选 token 之间。PPL = 1 意味着模型完全确定每个 token。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>档位</th><th>PPL 范围 (以 LLaMA 3 8B 为参考)</th><th>说明</th></tr></thead><tbody><tr><td>基准</td><td>6.23 (FP16)</td><td>满精度</td></tr><tr><td>近乎无损</td><td>6.23 ~ 6.26</td><td>q8_0, q6_K</td></tr><tr><td>微弱损失</td><td>6.26 ~ 6.50</td><td>q5_K_M, q4_K_M</td></tr><tr><td>可感知损失</td><td>6.50 ~ 7.00</td><td>q4_K_S(无imatrix), q3_K 系列</td></tr><tr><td>明显劣化</td><td>7.00 ~ 10.0</td><td>q3_K_S, q2_K</td></tr><tr><td>不可用</td><td>> 10.0</td><td>iq2_XXS 及更低</td></tr></tbody></table>
+<h4 id="在-llamacpp-中的实现">在 llama.cpp 中的实现</h4>
+<p>核心计算位于 <code>tools/perplexity/perplexity.cpp</code>。</p>
+<p><strong>Step 1：计算 log softmax</strong></p>
+<p>对于每个位置，模型输出 logits（未归一化的分数），需要先转为概率（<code>tools/perplexity/perplexity.cpp:59-69</code>）：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#F97583">static</span><span style="color:#E1E4E8"> results_log_softmax </span><span style="color:#B392F0">log_softmax</span><span style="color:#E1E4E8">(</span><span style="color:#F97583">int</span><span style="color:#FFAB70"> n_vocab</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">const</span><span style="color:#F97583"> float</span><span style="color:#F97583"> *</span><span style="color:#FFAB70"> logits</span><span style="color:#E1E4E8">, </span><span style="color:#F97583">int</span><span style="color:#FFAB70"> tok</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#F97583">    float</span><span style="color:#E1E4E8"> max_logit </span><span style="color:#F97583">=</span><span style="color:#FFAB70"> logits</span><span style="color:#E1E4E8">[</span><span style="color:#79B8FF">0</span><span style="color:#E1E4E8">];</span></span>
+<span class="line"><span style="color:#F97583">    for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> i </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 1</span><span style="color:#E1E4E8">; i </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> n_vocab; </span><span style="color:#F97583">++</span><span style="color:#E1E4E8">i) {</span></span>
+<span class="line"><span style="color:#E1E4E8">        max_logit </span><span style="color:#F97583">=</span><span style="color:#B392F0"> std::max</span><span style="color:#E1E4E8">(max_logit, </span><span style="color:#FFAB70">logits</span><span style="color:#E1E4E8">[i]);</span></span>
+<span class="line"><span style="color:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#F97583">    double</span><span style="color:#E1E4E8"> sum_exp </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0.0</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#F97583">    for</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">int</span><span style="color:#E1E4E8"> i </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">; i </span><span style="color:#F97583">&#x3C;</span><span style="color:#E1E4E8"> n_vocab; </span><span style="color:#F97583">++</span><span style="color:#E1E4E8">i) {</span></span>
+<span class="line"><span style="color:#E1E4E8">        sum_exp </span><span style="color:#F97583">+=</span><span style="color:#B392F0"> expf</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">logits</span><span style="color:#E1E4E8">[i] </span><span style="color:#F97583">-</span><span style="color:#E1E4E8"> max_logit);</span></span>
+<span class="line"><span style="color:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#F97583">    return</span><span style="color:#E1E4E8"> {</span><span style="color:#FFAB70">logits</span><span style="color:#E1E4E8">[tok] </span><span style="color:#F97583">-</span><span style="color:#E1E4E8"> max_logit </span><span style="color:#F97583">-</span><span style="color:#B392F0"> log</span><span style="color:#E1E4E8">(sum_exp),</span><span style="color:#6A737D">   // log P(tok)</span></span>
+<span class="line"><span style="color:#FFAB70">            logits</span><span style="color:#E1E4E8">[tok],</span><span style="color:#6A737D">                                // raw logit</span></span>
+<span class="line"><span style="color:#B392F0">            expf</span><span style="color:#E1E4E8">(</span><span style="color:#FFAB70">logits</span><span style="color:#E1E4E8">[tok] </span><span style="color:#F97583">-</span><span style="color:#E1E4E8"> max_logit) </span><span style="color:#F97583">/</span><span style="color:#E1E4E8"> (</span><span style="color:#F97583">float</span><span style="color:#E1E4E8">)sum_exp};</span><span style="color:#6A737D">  // P(tok)</span></span>
+<span class="line"><span style="color:#E1E4E8">}</span></span></code></pre>
+<p>先减去 <code>max_logit</code> 是经典的数值稳定技巧（log-sum-exp trick），防止 <code>exp()</code> 溢出。</p>
+<p><strong>Step 2：累加 NLL</strong></p>
+<p><code>process_logits</code> 函数（<code>tools/perplexity/perplexity.cpp:114-131</code>）对每个 token 累加 NLL：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#E1E4E8">auto compute </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> [</span><span style="color:#F97583">&#x26;</span><span style="color:#E1E4E8">] () {</span></span>
+<span class="line"><span style="color:#F97583">    double</span><span style="color:#E1E4E8"> local_nll  </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#F97583">    double</span><span style="color:#E1E4E8"> local_nll2 </span><span style="color:#F97583">=</span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#F97583">    while</span><span style="color:#E1E4E8"> (</span><span style="color:#79B8FF">true</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#6A737D">        // ...</span></span>
+<span class="line"><span style="color:#F97583">        const</span><span style="color:#E1E4E8"> results_log_softmax results </span><span style="color:#F97583">=</span><span style="color:#B392F0"> log_softmax</span><span style="color:#E1E4E8">(</span></span>
+<span class="line"><span style="color:#E1E4E8">                n_vocab, logits </span><span style="color:#F97583">+</span><span style="color:#F97583"> size_t</span><span style="color:#E1E4E8">(i)</span><span style="color:#F97583">*</span><span style="color:#E1E4E8">n_vocab, </span><span style="color:#FFAB70">tokens</span><span style="color:#E1E4E8">[i</span><span style="color:#F97583">+</span><span style="color:#79B8FF">1</span><span style="color:#E1E4E8">]);</span></span>
+<span class="line"><span style="color:#F97583">        const</span><span style="color:#F97583"> double</span><span style="color:#E1E4E8"> v </span><span style="color:#F97583">=</span><span style="color:#F97583"> -</span><span style="color:#E1E4E8">results.log_softmax;</span><span style="color:#6A737D">  // NLL = -log P(t_i)</span></span>
+<span class="line"><span style="color:#E1E4E8">        local_nll  </span><span style="color:#F97583">+=</span><span style="color:#E1E4E8"> v;</span></span>
+<span class="line"><span style="color:#E1E4E8">        local_nll2 </span><span style="color:#F97583">+=</span><span style="color:#E1E4E8"> v</span><span style="color:#F97583">*</span><span style="color:#E1E4E8">v;</span><span style="color:#6A737D">   // 用于计算 uncertainty</span></span>
+<span class="line"><span style="color:#6A737D">        // ...</span></span>
+<span class="line"><span style="color:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#E1E4E8">};</span></span></code></pre>
+<p>注意 <code>tokens[i+1]</code>——模型在位置 $i$ 预测的是<strong>下一个</strong> token $t_{i+1}$。</p>
+<p><strong>Step 3：计算最终 PPL</strong></p>
+<p>位于 <code>tools/perplexity/perplexity.cpp:647-656</code>：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#E1E4E8">nll2 </span><span style="color:#F97583">/=</span><span style="color:#E1E4E8"> count;</span></span>
+<span class="line"><span style="color:#E1E4E8">nll </span><span style="color:#F97583">/=</span><span style="color:#E1E4E8"> count;</span></span>
+<span class="line"><span style="color:#F97583">const</span><span style="color:#F97583"> double</span><span style="color:#E1E4E8"> ppl </span><span style="color:#F97583">=</span><span style="color:#B392F0"> exp</span><span style="color:#E1E4E8">(nll);</span><span style="color:#6A737D">       // PPL = exp(平均 NLL)</span></span>
+<span class="line"><span style="color:#E1E4E8">nll2 </span><span style="color:#F97583">-=</span><span style="color:#E1E4E8"> nll </span><span style="color:#F97583">*</span><span style="color:#E1E4E8"> nll;</span></span>
+<span class="line"><span style="color:#F97583">if</span><span style="color:#E1E4E8"> (nll2 </span><span style="color:#F97583">></span><span style="color:#79B8FF"> 0</span><span style="color:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#E1E4E8">    nll2 </span><span style="color:#F97583">=</span><span style="color:#B392F0"> sqrt</span><span style="color:#E1E4E8">(nll2</span><span style="color:#F97583">/</span><span style="color:#E1E4E8">(count</span><span style="color:#F97583">-</span><span style="color:#79B8FF">1</span><span style="color:#E1E4E8">));</span></span>
+<span class="line"><span style="color:#B392F0">    LOG_INF</span><span style="color:#E1E4E8">(</span><span style="color:#9ECBFF">"Final estimate: PPL = </span><span style="color:#79B8FF">%.4lf</span><span style="color:#9ECBFF"> +/- </span><span style="color:#79B8FF">%.5lf\n</span><span style="color:#9ECBFF">"</span><span style="color:#E1E4E8">, ppl, nll2</span><span style="color:#F97583">*</span><span style="color:#E1E4E8">ppl);</span></span>
+<span class="line"><span style="color:#E1E4E8">}</span></span></code></pre>
+<p>± 后面的 uncertainty 通过假设 NLL 服从 Gaussian distribution，然后做 error propagation 估计。</p>
+<p><strong>Sliding window 策略</strong></p>
+<p>文本通常远超 context window 大小。llama.cpp 将文本切分为多个 chunk，每个 chunk 等于 context window 大小。但每个 chunk 的<strong>前半段</strong> token 不计入 PPL，只有后半段计入（<code>tools/perplexity/perplexity.cpp:529-541</code>）：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#6A737D">// calculate the perplexity over the last half of the window</span></span>
+<span class="line"><span style="color:#6A737D">// (so the model always has some context to predict the token).</span></span>
+<span class="line"><span style="color:#F97583">const</span><span style="color:#F97583"> int</span><span style="color:#E1E4E8"> first </span><span style="color:#F97583">=</span><span style="color:#E1E4E8"> n_ctx</span><span style="color:#F97583">/</span><span style="color:#79B8FF">2</span><span style="color:#E1E4E8">;</span></span></code></pre>
+<p>这保证了每个被评估的 token 至少有 <code>n_ctx/2</code> 个 token 作为上下文，避免了”冷启动”带来的偏差。</p>
+<h4 id="如何使用">如何使用</h4>
+<p>llama.cpp 项目约定使用 <strong>Wikitext-2 test set</strong> 作为标准评测集（<code>tools/perplexity/README.md:9</code>）。</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="bash"><code><span class="line"><span style="color:#6A737D"># 下载测试数据</span></span>
+<span class="line"><span style="color:#B392F0">bash</span><span style="color:#9ECBFF"> scripts/get-wikitext-2.sh</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D"># 运行 perplexity 评测</span></span>
+<span class="line"><span style="color:#B392F0">./llama-perplexity</span><span style="color:#79B8FF"> -m</span><span style="color:#9ECBFF"> model-Q4_K_M.gguf</span><span style="color:#79B8FF"> -f</span><span style="color:#9ECBFF"> wikitext-2-raw/wiki.test.raw</span></span></code></pre>
+<h4 id="llama-3-8b-quantization-scoreboard">LLaMA 3 8B Quantization Scoreboard</h4>
+<p>以下数据来自 <code>tools/perplexity/README.md</code>，（测试环境：CUDA backend, AMD Epyc 7742 + RTX 4090）：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Quantization</th><th>imatrix</th><th>Size (GiB)</th><th>PPL</th><th>ΔPPL</th><th>KLD</th><th>Mean Δp</th><th>RMS Δp</th></tr></thead><tbody><tr><td>f16</td><td>-</td><td>14.97</td><td>6.2332 ± 0.0378</td><td>0.0015</td><td>0.000551</td><td>+0.001%</td><td>0.787%</td></tr><tr><td>q8_0</td><td>-</td><td>7.96</td><td>6.2343 ± 0.0379</td><td>0.0027</td><td>0.001355</td><td>-0.019%</td><td>1.198%</td></tr><tr><td>q6_K</td><td>-</td><td>6.14</td><td>6.2534 ± 0.0381</td><td>0.0217</td><td>0.005452</td><td>-0.007%</td><td>2.295%</td></tr><tr><td>q5_K_M</td><td>-</td><td>5.33</td><td>6.2886 ± 0.0383</td><td>0.0570</td><td>0.010762</td><td>-0.114%</td><td>3.160%</td></tr><tr><td>q4_K_M</td><td>WT 10m</td><td>4.58</td><td>6.3829 ± 0.0391</td><td>0.1513</td><td>0.028152</td><td>-0.389%</td><td>5.251%</td></tr><tr><td>q4_K_M</td><td>-</td><td>4.58</td><td>6.4071 ± 0.0391</td><td>0.1755</td><td>0.031273</td><td>-0.596%</td><td>5.519%</td></tr><tr><td>q4_K_S</td><td>-</td><td>4.37</td><td>6.5005 ± 0.0398</td><td>0.2689</td><td>0.043136</td><td>-0.927%</td><td>6.562%</td></tr><tr><td>q3_K_M</td><td>-</td><td>3.74</td><td>6.8885 ± 0.0427</td><td>0.6569</td><td>0.101913</td><td>-1.990%</td><td>10.203%</td></tr><tr><td>q2_K</td><td>WT 10m</td><td>2.96</td><td>8.6478 ± 0.0556</td><td>2.4162</td><td>0.332223</td><td>-6.500%</td><td>18.881%</td></tr><tr><td>q2_K</td><td>-</td><td>2.96</td><td>9.7516 ± 0.0633</td><td>3.5199</td><td>0.445132</td><td>-9.123%</td><td>21.421%</td></tr><tr><td>iq1_M</td><td>WT 10m</td><td>2.01</td><td>25.4937 ± 0.1779</td><td>19.2621</td><td>1.393084</td><td>-24.672%</td><td>38.287%</td></tr><tr><td>iq1_S</td><td>WT 1m</td><td>1.88</td><td>58.0978 ± 0.4386</td><td>51.8661</td><td>2.211278</td><td>-32.471%</td><td>46.418%</td></tr></tbody></table>
+<p>LLaMA 2 7B 与 LLaMA 3 8B 的 quantization 对比（<code>tools/perplexity/README.md:109-125</code>）：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Metric</th><th>L2 7b q4_K_M</th><th>L3 8b q4_K_M</th><th>L2 7b q8_0</th><th>L3 8b q8_0</th></tr></thead><tbody><tr><td>PPL</td><td>5.877 ± 0.033</td><td>6.407 ± 0.039</td><td>5.799 ± 0.032</td><td>6.234 ± 0.038</td></tr><tr><td>PPL ratio</td><td>1.0142</td><td>1.0282</td><td>1.0007</td><td>1.0004</td></tr><tr><td>KLD</td><td>0.012686</td><td>0.031273</td><td>0.000369</td><td>0.001355</td></tr><tr><td>Mean Δp</td><td>-0.416%</td><td>-0.596%</td><td>-0.005%</td><td>-0.019%</td></tr><tr><td>RMS Δp</td><td>3.252%</td><td>5.519%</td><td>0.618%</td><td>1.198%</td></tr><tr><td>Same top p</td><td>94.665%</td><td>91.901%</td><td>98.846%</td><td>97.674%</td></tr></tbody></table>
+<p>可以看到 LLaMA 3 对 quantization 更敏感——同样的 q4_K_M，LLaMA 3 的 KLD 是 LLaMA 2 的 2.5 倍。</p>
+<h4 id="局限性">局限性</h4>
+<ul>
+<li><strong>不同 tokenizer 的模型之间不可比</strong>：tokenizer 不同，token 数量不同，PPL 计算基准不同</li>
+<li><strong>Finetune 后 PPL 可能反而升高</strong>：finetune 使模型在特定任务上更好，但在通用文本上的 PPL 可能变大</li>
+<li><strong>不同框架之间不可比</strong>：实现细节（sliding window 策略、BOS token 处理等）都会影响数值 - <strong>PPL 衡量的是”平均预测能力”</strong>：无法反映模型在特定类型问题上的表现</li>
+</ul>
+<p><strong>PPL 最佳使用场景</strong>：比较<strong>同一个模型</strong>在不同 quantization scheme 下的质量损失——所有变量（模型、tokenizer、测试集、框架）固定，只改变 quantization 方案。</p>
+<h3 id="42-δppldelta-ppl">4.2 ΔPPL（Delta PPL）</h3>
+<p>$\Delta\text{PPL} = \text{PPL}<em>{quant} - \text{PPL}</em>{f16}$</p>
+<p>纯粹的差值，直接反映 quantization 带来的 PPL 劣化。PPL 本身的绝对值受模型和 tokenizer 影响，但 ΔPPL 作为同一模型内的差值，更具可比性。</p>
+<h3 id="43-kldkullback-leibler-divergence">4.3 KLD（Kullback-Leibler Divergence）</h3>
+<p>$$D_{KL}(P_{f16} | P_{quant}) = \sum_{i} P_{f16}(t_i) \log \frac{P_{f16}(t_i)}{P_{quant}(t_i)}$$</p>
+<p>KLD = 0 表示两个分布完全一致。</p>
+<p><strong>与 PPL 的核心区别</strong>：PPL 只看模型给”正确答案”的概率，而 KLD 比较的是<strong>整个 vocabulary 上的概率分布</strong>。即使两个模型 PPL 接近，如果它们在非正确 token 上的概率分配差异很大，KLD 仍然会很高。KLD 是对 quantization 影响更全面的衡量。</p>
+<h3 id="44-mean-δp平均概率变化">4.4 Mean Δp（平均概率变化）</h3>
+<p>$$\text{Mean } \Delta p = \frac{1}{N}\sum_{i=1}^{N}\left(P_{quant}(t_i) - P_{f16}(t_i)\right)$$</p>
+<p>负值表示 quantization 使模型给正确答案的概率降低了。从数据看：</p>
+<ul>
+<li>q8_0：<strong>-0.019%</strong> — 正确 token 概率平均只降了万分之二</li>
+<li>q4_K_M：<strong>-0.596%</strong> — 平均降了不到 1%</li>
+<li>q2_K（无 imatrix）：<strong>-9.123%</strong> — 平均降了近 10%</li>
+</ul>
+<h3 id="45-rms-δp概率变化的均方根">4.5 RMS Δp（概率变化的均方根）</h3>
+<p>$$\text{RMS } \Delta p = \sqrt{\frac{1}{N}\sum_{i=1}^{N}\left(P_{quant}(t_i) - P_{f16}(t_i)\right)^2}$$</p>
+<p>如果把 quantization 视为在 token 概率上叠加的”噪声”，RMS Δp 就是这个噪声的标准差。与 Mean Δp 的区别：Mean Δp 正负抵消，反映系统性偏移；RMS Δp 反映波动的绝对幅度。</p>
+<h3 id="46-same-top-ptop-1-一致率">4.6 Same top p（Top-1 一致率）</h3>
+<p>FP16 和 quantized model 预测的 top-1 token 相同的比例。q4_K_M 约 <strong>91.9%</strong> 的位置 top-1 一致，意味着绝大多数 generation step 产生的结果和 FP16 相同。</p>
+<h3 id="47-percentiles-of-δp">4.7 Percentiles of Δp</h3>
+<h4 id="先理解-δp">先理解 Δp</h4>
+<p>对于测试集中的每一个 token $t_i$，我们可以算出一个 Δp：</p>
+<p>$$\Delta p_i = P_{quant}(t_i) - P_{f16}(t_i)$$</p>
+<p>即 quantized model 给正确 token 的概率，减去 FP16 model 给正确 token 的概率。</p>
+<ul>
+<li>$\Delta p_i > 0$：quantized model 在这个位置<strong>反而预测更好了</strong></li>
+<li>$\Delta p_i &#x3C; 0$：quantized model 在这个位置<strong>预测变差了</strong></li>
+<li>$\Delta p_i = 0$：没有变化</li>
+</ul>
+<p>Wikitext-2 test set 在 LLaMA 3 8B 上大约产生几十万个 token，所以我们得到了<strong>几十万个 Δp 值</strong>。</p>
+<h4 id="什么是-percentiles">什么是 Percentiles</h4>
+<p>Percentile（百分位数）就是把这几十万个 Δp 值<strong>从小到大排序</strong>，然后看各个位置的值：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>排序后的 Δp 值:</span></span>
+<span class="line"><span>[-99.97%, ..., -87.17%, ..., -2.48%, ..., 0%, ..., +25.88%, ..., +94.27%]</span></span>
+<span class="line"><span>    ↑              ↑            ↑         ↑            ↑             ↑</span></span>
+<span class="line"><span> Minimum         1.0%       Median(50%)              99.0%       Maximum</span></span></code></pre>
+<p>具体含义：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Percentile</th><th>含义</th></tr></thead><tbody><tr><td><strong>Maximum</strong></td><td>所有 token 中 Δp 最大的那个（quantization “帮了最大忙”的位置）</td></tr><tr><td><strong>99.9%</strong></td><td>99.9% 的 token 的 Δp 低于这个值</td></tr><tr><td><strong>99.0%</strong></td><td>99% 的 token 的 Δp 低于这个值</td></tr><tr><td><strong>Median (50%)</strong></td><td>正中间的那个值</td></tr><tr><td><strong>1.0%</strong></td><td>只有 1% 的 token 的 Δp 比这个值更低（即”最受伤”的 1%）</td></tr><tr><td><strong>0.1%</strong></td><td>只有 0.1% 的 token 的 Δp 比这个值更低（极端 worst case）</td></tr><tr><td><strong>Minimum</strong></td><td>所有 token 中 Δp 最小的那个（quantization “伤害最大”的位置）</td></tr></tbody></table>
+<h4 id="用-q4_k_m-的具体数据举例">用 q4_K_M 的具体数据举例</h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Percentile</th><th>值</th><th>解读</th></tr></thead><tbody><tr><td>Maximum</td><td>+95.054%</td><td>有个 token 在 quantize 后概率反而涨了 95%</td></tr><tr><td>99.0%</td><td>+12.084%</td><td>最好的 1% token 概率至少涨了 12%</td></tr><tr><td>Median</td><td>-0.024%</td><td>一半 token 概率变化在 -0.024% 以内，几乎无影响</td></tr><tr><td>1.0%</td><td>-19.567%</td><td>最差的 1% token 概率至少降了 19.6%</td></tr><tr><td>0.1%</td><td>-56.054%</td><td>最差的千分之一 token 概率降了 56%</td></tr><tr><td>Minimum</td><td>-98.699%</td><td>最惨的单个 token 概率几乎归零</td></tr></tbody></table>
+<h4 id="核心价值判断是噪声还是真正变差">核心价值：判断是”噪声”还是”真正变差”</h4>
+<p>这是 <code>tools/perplexity/README.md</code> 中解释的关键判断方法。</p>
+<p><strong>对称 → 只是噪声</strong>（如 q8_0）：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>99.0% Δp = +3.544%</span></span>
+<span class="line"><span> 1.0% Δp = -3.698%     ← 正负幅度差不多</span></span></code></pre>
+<p>正的和负的差不多大，说明 quantization 只是给概率加了随机波动，没有系统性偏向。就像给照片加了均匀的噪点。</p>
+<p><strong>不对称 → 真正劣化</strong>（如 q2_K）：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>99.0% Δp = +25.875%</span></span>
+<span class="line"><span> 1.0% Δp = -87.173%    ← 负的方向大得多！</span></span></code></pre>
+<p>负方向的变化远大于正方向，说明 quantization 真的让模型变差了。而且最差的 1% token 概率暴跌 87%，意味着有些 token 几乎预测不出来了。</p>
+<p>用图形直觉来理解：</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>q8_0 的 Δp 分布 (对称 → 纯噪声):</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>       ▁▂▃▅█████▅▃▂▁</span></span>
+<span class="line"><span>  -4%  -2%   0   +2%  +4%</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>q2_K 的 Δp 分布 (不对称 → 真正劣化):</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>  ▁▂▃▅██████▅▃▂▁</span></span>
+<span class="line"><span>-90%  -50%  -10% 0  +10%  +26%</span></span>
+<span class="line"><span>                 ← 严重左偏，负方向有长长的尾巴</span></span></code></pre>
+<p>所以 Percentiles of Δp 比 Mean Δp 和 RMS Δp 提供了更细粒度的信息——它告诉你不只是”平均怎样”，还告诉你”最坏情况有多坏”，以及劣化是随机的还是系统性的。</p>
+<p>以 LLaMA 3 8B 为例（<code>tools/perplexity/README.md:117-123</code>）：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Percentile</th><th>q8_0</th><th>q4_K_M</th><th>q2_K</th></tr></thead><tbody><tr><td>99.0% Δp</td><td>+3.544%</td><td>+12.084%</td><td>+25.875%</td></tr><tr><td>Median Δp</td><td>-0.000%</td><td>-0.024%</td><td>-2.476%</td></tr><tr><td>1.0% Δp</td><td>-3.698%</td><td>-19.567%</td><td>-87.173%</td></tr><tr><td>0.1% Δp</td><td>-6.579%</td><td>-56.054%</td><td>-98.897%</td></tr></tbody></table>
+<p>判断方法：</p>
+<ul>
+<li><strong>正负分位数大致对称</strong>（如 q8_0：+3.5% vs -3.7%）→ quantization 只是加了随机噪声，没有系统性劣化</li>
+<li><strong>负值远大于正值</strong>（如 q4_K_M：+12% vs -19.6%）→ quantization 导致模型有一定程度的真实劣化</li>
+<li><strong>极度不对称</strong>（如 q2_K：+25.9% vs -87.2%）→ 严重劣化</li>
+</ul>
+<h3 id="48-importance-matriximatrix效果">4.8 Importance Matrix（imatrix）效果</h3>
+<p>imatrix 的原理：通过在代表性文本上统计每个 weight 对 output 的 importance（影响程度），然后在 quantization 时给重要的 weight 分配更高的精度。</p>
+<p>从 scoreboard 中可以直接对比 imatrix 的作用：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>配置</th><th>PPL</th><th>ΔPPL</th><th>KLD</th></tr></thead><tbody><tr><td>q4_K_M 无 imatrix</td><td>6.4071</td><td>0.1755</td><td>0.031273</td></tr><tr><td>q4_K_M 有 imatrix</td><td>6.3829</td><td>0.1513</td><td>0.028152</td></tr><tr><td>q4_K_S 无 imatrix</td><td>6.5005</td><td>0.2689</td><td>0.043136</td></tr><tr><td>q4_K_S 有 imatrix</td><td>6.4097</td><td>0.1781</td><td>0.031951</td></tr><tr><td>q2_K 无 imatrix</td><td>9.7516</td><td>3.5199</td><td>0.445132</td></tr><tr><td>q2_K 有 imatrix</td><td>8.6478</td><td>2.4162</td><td>0.332223</td></tr></tbody></table>
+<p>规律：<strong>bit 数越低，imatrix 的收益越大</strong>。q4_K_M 有 imatrix 后 ΔPPL 改善约 14%；q2_K 改善约 31%。高 bit 数（如 q8_0, q6_K）基本不需要 imatrix。</p>
+<h3 id="49-如何选择-quantization">4.9 如何选择 Quantization</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>你的需求</th><th>推荐方案</th><th>PPL (8B)</th><th>Size</th><th>ΔPPL</th></tr></thead><tbody><tr><td>精度至上</td><td>q8_0</td><td>6.234</td><td>7.96 GiB</td><td>+0.003</td></tr><tr><td>高质量 + 较小体积</td><td>q6_K</td><td>6.253</td><td>6.14 GiB</td><td>+0.022</td></tr><tr><td><strong>平衡之选（默认推荐）</strong></td><td><strong>q4_K_M</strong></td><td><strong>6.407</strong></td><td><strong>4.58 GiB</strong></td><td><strong>+0.175</strong></td></tr><tr><td>尽量小</td><td>q4_K_S + imatrix</td><td>6.410</td><td>4.37 GiB</td><td>+0.178</td></tr><tr><td>极限压缩</td><td>q2_K + imatrix</td><td>8.648</td><td>2.96 GiB</td><td>+2.416</td></tr><tr><td>学术实验</td><td>iq1_S</td><td>58.098</td><td>1.88 GiB</td><td>+51.866</td></tr></tbody></table>
+<p><strong>核心原则</strong>：ΔPPL 不超过 0.5 时，日常使用几乎感受不到质量下降。q4_K_M 在 size/quality trade-off 上是公认的 sweet spot。</p>
+<blockquote>
+<p>使用 —help 也可以看到简单各类量化的效果</p>
+<pre class="astro-code github-dark" style="background-color:#24292e;color:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>$ ./llama-quantize -h</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>-----------------------------------------------------------------------------</span></span>
+<span class="line"><span> allowed quantization types</span></span>
+<span class="line"><span>-----------------------------------------------------------------------------</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>   2  or  Q4_0    :  4.34G, +0.4685 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>   3  or  Q4_1    :  4.78G, +0.4511 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  38  or  MXFP4_MOE :  MXFP4 MoE</span></span>
+<span class="line"><span>   8  or  Q5_0    :  5.21G, +0.1316 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>   9  or  Q5_1    :  5.65G, +0.1062 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  19  or  IQ2_XXS :  2.06 bpw quantization</span></span>
+<span class="line"><span>  20  or  IQ2_XS  :  2.31 bpw quantization</span></span>
+<span class="line"><span>  28  or  IQ2_S   :  2.5  bpw quantization</span></span>
+<span class="line"><span>  29  or  IQ2_M   :  2.7  bpw quantization</span></span>
+<span class="line"><span>  24  or  IQ1_S   :  1.56 bpw quantization</span></span>
+<span class="line"><span>  31  or  IQ1_M   :  1.75 bpw quantization</span></span>
+<span class="line"><span>  36  or  TQ1_0   :  1.69 bpw ternarization</span></span>
+<span class="line"><span>  37  or  TQ2_0   :  2.06 bpw ternarization</span></span>
+<span class="line"><span>  10  or  Q2_K    :  2.96G, +3.5199 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  21  or  Q2_K_S  :  2.96G, +3.1836 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  23  or  IQ3_XXS :  3.06 bpw quantization</span></span>
+<span class="line"><span>  26  or  IQ3_S   :  3.44 bpw quantization</span></span>
+<span class="line"><span>  27  or  IQ3_M   :  3.66 bpw quantization mix</span></span>
+<span class="line"><span>  12  or  Q3_K    : alias for Q3_K_M</span></span>
+<span class="line"><span>  22  or  IQ3_XS  :  3.3 bpw quantization</span></span>
+<span class="line"><span>  11  or  Q3_K_S  :  3.41G, +1.6321 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  12  or  Q3_K_M  :  3.74G, +0.6569 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  13  or  Q3_K_L  :  4.03G, +0.5562 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  25  or  IQ4_NL  :  4.50 bpw non-linear quantization</span></span>
+<span class="line"><span>  30  or  IQ4_XS  :  4.25 bpw non-linear quantization</span></span>
+<span class="line"><span>  15  or  Q4_K    : alias for Q4_K_M</span></span>
+<span class="line"><span>  14  or  Q4_K_S  :  4.37G, +0.2689 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  15  or  Q4_K_M  :  4.58G, +0.1754 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  17  or  Q5_K    : alias for Q5_K_M</span></span>
+<span class="line"><span>  16  or  Q5_K_S  :  5.21G, +0.1049 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  17  or  Q5_K_M  :  5.33G, +0.0569 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>  18  or  Q6_K    :  6.14G, +0.0217 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>   7  or  Q8_0    :  7.96G, +0.0026 ppl @ Llama-3-8B</span></span>
+<span class="line"><span>   1  or  F16     : 14.00G, +0.0020 ppl @ Mistral-7B</span></span>
+<span class="line"><span>  32  or  BF16    : 14.00G, -0.0050 ppl @ Mistral-7B</span></span>
+<span class="line"><span>   0  or  F32     : 26.00G              @ 7B</span></span>
+<span class="line"><span>          COPY    : only copy tensors, no quantizing</span></span></code></pre>
+</blockquote>
+<h2 id="五总结">五、总结</h2>
+<p>GGUF 格式和 quantization 机制是 llama.cpp 的两大基石。GGUF 提供了 self-contained、extensible、mmap-friendly 的存储方案；quantization 则通过 block-wise 量化、分层 scale 设计、mixed-precision 策略、on-the-fly activation quantization 等一系列工程手段，在模型体积、推理速度和精度之间取得了出色的平衡。</p>
+<p>这也是为什么一个 7B 参数的 LLM 能够以 ~4 GB 的体积，在 MacBook 上流畅运行的根本原因。</p>
+<p>另外，不得不感叹下现在 AI 太厉害了，尤其是读代码，又准确又快。本文档也基本上是 AI 写的。</p>
+<h2 id="六参考">六、参考</h2>
+<ul>
+<li><a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a></li>
+<li><a href="https://huggingface.co/docs/hub/gguf">huggingface-gguf</a></li>
+<li><a href="https://huggingface.co/blog/gemma4">Gemma 4</a></li>
+</ul> </div> <nav class="post-nav"> <a href="/posts/images-and-media">← Working with Images and Media</a>  </nav> <p><a href="/">← Back to all posts</a></p> <section class="comments"> <script src="https://giscus.app/client.js" data-repo="dazhuangzhuang1024/dazhuangzhuang1024.github.io" data-repo-id="R_kgDORqhWCw" data-category="General" data-category-id="DIC_kwDORqhWC84C4tPe" data-mapping="pathname" data-strict="0" data-reactions-enabled="1" data-emit-metadata="0" data-input-position="bottom" data-theme="light" data-lang="zh-CN" data-loading="lazy" crossorigin="anonymous" async></script> <script>
+          // Sync giscus theme with site theme on load
+          (function() {
+            const theme = document.documentElement.getAttribute('data-theme') || 'light';
+            const observer = new MutationObserver(() => {
+              const iframe = document.querySelector('iframe.giscus-frame');
+              if (iframe) {
+                iframe.contentWindow.postMessage(
+                  { giscus: { setConfig: { theme: theme === 'dark' ? 'dark' : 'light' } } },
+                  'https://giscus.app'
+                );
+                observer.disconnect();
+              }
+            });
+            observer.observe(document.querySelector('.comments'), { childList: true, subtree: true });
+          })();
+        </script> </section> </article> <aside class="toc"> <nav> <h4>Outline</h4> <ul> <li class="toc-depth-2"> <a href="#一gguf-文件格式">一、GGUF 文件格式</a> </li><li class="toc-depth-3"> <a href="#11-设计哲学">1.1 设计哲学</a> </li><li class="toc-depth-3"> <a href="#12-二进制布局">1.2 二进制布局</a> </li><li class="toc-depth-3"> <a href="#13-kv-metadata-体系">1.3 KV Metadata 体系</a> </li><li class="toc-depth-3"> <a href="#14-tensor-存储与-ggml_type">1.4 Tensor 存储与 ggml_type</a> </li><li class="toc-depth-3"> <a href="#15-生产流程">1.5 生产流程</a> </li><li class="toc-depth-2"> <a href="#二命名规范">二、命名规范</a> </li><li class="toc-depth-3"> <a href="#21-命名格式">2.1 命名格式</a> </li><li class="toc-depth-3"> <a href="#22-各组件详解">2.2 各组件详解</a> </li><li class="toc-depth-3"> <a href="#23-各组件格式细节">2.3 各组件格式细节</a> </li><li class="toc-depth-3"> <a href="#24-完整示例">2.4 完整示例</a> </li><li class="toc-depth-3"> <a href="#25-在-llamacpp-中的实现">2.5 在 llama.cpp 中的实现</a> </li><li class="toc-depth-2"> <a href="#三quantization">三、Quantization</a> </li><li class="toc-depth-3"> <a href="#31-q8_0">3.1 Q8_0</a> </li><li class="toc-depth-3"> <a href="#32-k-quant分层-quantization">3.2 K-quant：分层 Quantization</a> </li><li class="toc-depth-3"> <a href="#33-mixed-precision-策略q4_k_s-与-q4_k_m">3.3 Mixed-Precision 策略：Q4_K_S 与 Q4_K_M</a> </li><li class="toc-depth-3"> <a href="#34-activation-quantization-on-the-fly">3.4 Activation Quantization: On-the-fly</a> </li><li class="toc-depth-3"> <a href="#35-总结">3.5 总结</a> </li><li class="toc-depth-2"> <a href="#四评估-quantization-质量">四、评估 Quantization 质量</a> </li><li class="toc-depth-3"> <a href="#41-perplexityppl">4.1 Perplexity(PPL)</a> </li><li class="toc-depth-3"> <a href="#42-δppldelta-ppl">4.2 ΔPPL（Delta PPL）</a> </li><li class="toc-depth-3"> <a href="#43-kldkullback-leibler-divergence">4.3 KLD（Kullback-Leibler Divergence）</a> </li><li class="toc-depth-3"> <a href="#44-mean-δp平均概率变化">4.4 Mean Δp（平均概率变化）</a> </li><li class="toc-depth-3"> <a href="#45-rms-δp概率变化的均方根">4.5 RMS Δp（概率变化的均方根）</a> </li><li class="toc-depth-3"> <a href="#46-same-top-ptop-1-一致率">4.6 Same top p（Top-1 一致率）</a> </li><li class="toc-depth-3"> <a href="#47-percentiles-of-δp">4.7 Percentiles of Δp</a> </li><li class="toc-depth-3"> <a href="#48-importance-matriximatrix效果">4.8 Importance Matrix（imatrix）效果</a> </li><li class="toc-depth-3"> <a href="#49-如何选择-quantization">4.9 如何选择 Quantization</a> </li><li class="toc-depth-2"> <a href="#五总结">五、总结</a> </li><li class="toc-depth-2"> <a href="#六参考">六、参考</a> </li> </ul> </nav> </aside> </div>  </main> <footer> <p>&copy; 2026 My Blog</p> </footer> <script>
+      (function() {
+        const btn = document.getElementById('theme-toggle');
+        btn.addEventListener('click', () => {
+          const current = document.documentElement.getAttribute('data-theme');
+          const next = current === 'dark' ? 'light' : 'dark';
+          document.documentElement.setAttribute('data-theme', next);
+          localStorage.setItem('theme', next);
+          // Update giscus theme if present
+          const giscus = document.querySelector('iframe.giscus-frame');
+          if (giscus) {
+            giscus.contentWindow.postMessage(
+              { giscus: { setConfig: { theme: next === 'dark' ? 'dark' : 'light' } } },
+              'https://giscus.app'
+            );
+          }
+        });
+      })();
+    </script>  </body> </html>
