@@ -15,7 +15,7 @@ const { title, hasMermaid = false } = Astro.props;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/jpeg" href="/favicon.jpg" />
-    <title>{title} | DZZ's Blog</title>
+    <title>{title}</title>
     <script is:inline>
       (function() {
         const saved = localStorage.getItem('theme');
@@ -28,7 +28,7 @@ const { title, hasMermaid = false } = Astro.props;
   <body>
     <header>
       <nav>
-        <a class="site-title" href="/">DZZ's Blog</a>
+        <a class="site-title" href="/">Blog</a>
         <div class="nav-links">
           <a href="/about">About</a>
         </div>
@@ -42,7 +42,7 @@ const { title, hasMermaid = false } = Astro.props;
       <slot />
     </main>
     <footer>
-      <p>&copy; 2026 DZZ's Blog</p>
+      <p>&copy; 2026 Blog</p>
     </footer>
     <script is:inline>
       (function() {

@@ -22,7 +22,7 @@ const hasMermaid = post.body?.includes('```mermaid') ?? false;
 const tocHeadings = headings.filter((h) => h.depth <= 3);
 ---
 
-<BaseLayout title={post.data.title} hasMermaid={hasMermaid}>
+<BaseLayout title={`${post.data.title} | Blog`} hasMermaid={hasMermaid}>
   <div class="post-layout">
     <article>
       <div class="post-header">
