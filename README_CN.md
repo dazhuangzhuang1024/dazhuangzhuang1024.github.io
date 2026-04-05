@@ -7,24 +7,44 @@
 ## 功能特性
 
 - Markdown 博客文章，支持 YAML front matter
+- **内容与源码分离** — 在 `content/` 中写作，`src/` 存放网站代码
+- **文章独立图片目录** — 图片与文章放在一起，方便管理
 - 代码语法高亮（Shiki，github-dark 主题）
 - Mermaid 图表渲染（流程图、时序图等）
 - 标签筛选和搜索
 - 文章目录大纲
 - 基于 GitHub 的评论系统（giscus）
-- 响应式现代设计
+- 响应式现代设计，支持深色模式
 - 支持 GitHub Pages 部署
+
+## 项目结构
+
+```
+├── content/                # ✏️ 所有文章内容在这里
+│   ├── about.md            # 关于页面
+│   └── blog/
+│       ├── my-post/
+│       │   ├── index.md    # 文章正文
+│       │   └── images/     # 文章专属图片
+│       └── another-post/
+│           └── index.md
+├── src/                    # 🔧 网站源码
+│   ├── content.config.ts   # 内容集合定义
+│   ├── layouts/            # BaseLayout.astro
+│   ├── pages/              # index.astro, about.astro, posts/[slug].astro
+│   ├── plugins/            # Remark 和 Vite 插件
+│   └── styles/             # global.css
+├── public/images/          # 站点公共图片（头像等）
+├── docs/                   # 构建产物（GitHub Pages 从这里部署）
+├── astro.config.mjs
+└── package.json
+```
 
 ## 快速开始
 
 ```bash
-# 安装依赖
 npm install
-
-# 构建网站
 npm run build
-
-# 本地预览
 npm run preview
 ```
 
@@ -34,7 +54,12 @@ npm run preview
 
 ### 新建文章
 
-在 `src/content/blog/` 目录下创建 `.md` 文件：
+在 `content/blog/` 下创建文章目录，包含一个 `index.md` 文件：
+
+```
+content/blog/my-new-post/
+└── index.md
+```
 
 ```markdown
 ---
@@ -50,24 +75,37 @@ tags: ["标签1", "标签2"]
 **必填字段：** `title`、`date`
 **可选字段：** `description`、`tags`
 
-### 配合 Typora 使用
-
-1. 用 Typora 打开 `src/content/blog/` 文件夹
-2. 配置 Typora 图片设置：
-   - 打开 **偏好设置 → 图像**
-   - "插入图片时" 选择 **复制图片到自定义文件夹**
-   - 自定义文件夹设为：`../../public/images`
-   - 勾选 **使用相对路径**
-3. 写文章时直接粘贴图片，Typora 会自动保存到 `public/images/`
-4. 写完后运行 `npm run build` 生成网站
+目录名即为 URL slug — `my-new-post/index.md` → `/posts/my-new-post`。
 
 ### 插入图片
 
-将图片放在 `public/images/` 目录，在 markdown 中引用：
+将图片放在文章目录的 `images/` 文件夹中，使用**相对路径**引用：
+
+```
+content/blog/my-post/
+├── index.md
+└── images/
+    ├── screenshot.png
+    └── diagram.svg
+```
 
 ```markdown
-![描述](/images/my-photo.jpg)
+![截图](./images/screenshot.png)
+![图表](./images/diagram.svg)
 ```
+
+相对图片路径会在构建时自动解析。站点公共图片（头像等）仍放在 `public/images/`。
+
+### 配合 Typora 使用
+
+1. 用 Typora 打开文章目录（如 `content/blog/my-post/`）
+2. 配置 Typora 图片设置：
+   - 打开 **偏好设置 → 图像**
+   - "插入图片时" 选择 **复制图片到自定义文件夹**
+   - 自定义文件夹设为：`./images`
+   - 勾选 **使用相对路径**
+3. 写文章时直接粘贴图片，Typora 会自动保存到文章旁边的 `images/` 目录
+4. 写完后运行 `npm run build` 生成网站
 
 ### 插入视频
 
@@ -106,10 +144,12 @@ flowchart TD
 ### 日常工作流
 
 ```bash
-# 在 src/content/blog/ 写文章
-# 构建
+# 1. 新建文章
+mkdir content/blog/my-new-post
+# 2. 编写 content/blog/my-new-post/index.md
+# 3. 构建
 npm run build
-# 提交推送
+# 4. 提交推送
 git add .
 git commit -m "新文章"
 git push
@@ -130,11 +170,10 @@ git push
 
 ### 关于页面
 
-用 Typora 或任何编辑器编辑 `src/content/about.md`：
+编辑 `content/about.md`：
 
 - **Front matter** 控制你的名字、头像、GitHub 链接和邮箱
 - **正文** 用标准 markdown 写你的个人简介
-- 支持所有 markdown 特性（标题、列表、链接、图片等）
 
 ```markdown
 ---

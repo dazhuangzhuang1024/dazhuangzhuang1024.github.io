@@ -1,5 +1,7 @@
 import { defineConfig } from 'astro/config';
 import remarkMermaid from './src/plugins/remark-mermaid.ts';
+import remarkRelativeImages from './src/plugins/remark-relative-images.ts';
+import { contentImagesPlugin } from './src/plugins/vite-content-images.ts';
 
 export default defineConfig({
   outDir: './docs',
@@ -11,6 +13,9 @@ export default defineConfig({
     shikiConfig: {
       theme: 'github-dark',
     },
-    remarkPlugins: [remarkMermaid],
+    remarkPlugins: [remarkRelativeImages, remarkMermaid],
+  },
+  vite: {
+    plugins: [contentImagesPlugin()],
   },
 });

@@ -7,25 +7,35 @@ A static blog site built with [Astro](https://astro.build/), featuring Mermaid d
 ## Features
 
 - Markdown blog posts with YAML front matter
+- **Content separated from source code** — write in `content/`, build from `src/`
+- **Per-article image directories** — colocate images with their posts
 - Syntax highlighting (Shiki, github-dark theme)
 - Mermaid diagram rendering (flowcharts, sequence diagrams, etc.)
 - Tag filtering and search
 - Table of contents outline on post pages
 - GitHub-based comments via [giscus](https://giscus.app/)
-- Responsive, modern design
+- Responsive, modern design with dark mode
 - GitHub Pages ready
 
 ## Project Structure
 
 ```
-├── src/
-│   ├── content/blog/       # Markdown blog posts go here
-│   ├── layouts/             # BaseLayout.astro
-│   ├── pages/               # index.astro, about.astro, posts/[slug].astro
-│   ├── plugins/             # remark-mermaid plugin
-│   └── styles/              # global.css
-├── public/images/           # Static images for posts
-├── docs/                    # Built output (GitHub Pages serves from here)
+├── content/                # ✏️ All your writing lives here
+│   ├── about.md            # About page content
+│   └── blog/
+│       ├── my-post/
+│       │   ├── index.md    # Post content
+│       │   └── images/     # Post-specific images
+│       └── another-post/
+│           └── index.md
+├── src/                    # 🔧 Website source code
+│   ├── content.config.ts   # Content collection definition
+│   ├── layouts/            # BaseLayout.astro
+│   ├── pages/              # index.astro, about.astro, posts/[slug].astro
+│   ├── plugins/            # Remark & Vite plugins
+│   └── styles/             # global.css
+├── public/images/          # Shared site images (avatar, favicon, etc.)
+├── docs/                   # Built output (GitHub Pages serves from here)
 ├── astro.config.mjs
 └── package.json
 ```
@@ -33,13 +43,8 @@ A static blog site built with [Astro](https://astro.build/), featuring Mermaid d
 ## Quick Start
 
 ```bash
-# Install dependencies
 npm install
-
-# Build the site
 npm run build
-
-# Preview locally
 npm run preview
 ```
 
@@ -49,7 +54,12 @@ Open http://localhost:4321 to see your blog.
 
 ### Create a New Post
 
-Create a `.md` file in `src/content/blog/`:
+Create a directory under `content/blog/` with an `index.md` file:
+
+```
+content/blog/my-new-post/
+└── index.md
+```
 
 ```markdown
 ---
@@ -65,24 +75,37 @@ Your content here...
 **Required fields:** `title`, `date`
 **Optional fields:** `description`, `tags`
 
-### Using Typora
-
-1. Open the `src/content/blog/` folder in Typora
-2. Configure Typora image settings:
-   - Go to **Preferences → Image**
-   - Set "When Insert" to **Copy image to custom folder**
-   - Set the custom folder to: `../../public/images`
-   - Check **Use relative path**
-3. Write your post — paste images directly and Typora saves them to `public/images/`
-4. After writing, run `npm run build` to generate the site
+The directory name becomes the URL slug — `my-new-post/index.md` → `/posts/my-new-post`.
 
 ### Images
 
-Place images in `public/images/` and reference them in markdown:
+Place images in the `images/` folder next to your `index.md` and use **relative paths**:
+
+```
+content/blog/my-post/
+├── index.md
+└── images/
+    ├── screenshot.png
+    └── diagram.svg
+```
 
 ```markdown
-![Description](/images/my-photo.jpg)
+![Screenshot](./images/screenshot.png)
+![Diagram](./images/diagram.svg)
 ```
+
+Relative image paths are automatically resolved during build. Shared site-wide images (avatar, favicon) still go in `public/images/`.
+
+### Using Typora
+
+1. Open the article directory (e.g., `content/blog/my-post/`) in Typora
+2. Configure Typora image settings:
+   - Go to **Preferences → Image**
+   - Set "When Insert" to **Copy image to custom folder**
+   - Set the custom folder to: `./images`
+   - Check **Use relative path**
+3. Write your post — paste images directly and Typora saves them alongside your content
+4. After writing, run `npm run build` to generate the site
 
 ### Videos
 
@@ -121,10 +144,12 @@ flowchart TD
 ### Workflow
 
 ```bash
-# Write a post in src/content/blog/
-# Build
+# 1. Create a new post
+mkdir content/blog/my-new-post
+# 2. Write content/blog/my-new-post/index.md
+# 3. Build
 npm run build
-# Commit and push
+# 4. Commit and push
 git add .
 git commit -m "new post"
 git push
@@ -145,11 +170,10 @@ git push
 
 ### About Page
 
-Edit `src/content/about.md` in Typora or any text editor:
+Edit `content/about.md`:
 
 - **Front matter** controls your name, avatar, GitHub link, and email
 - **Body** is your bio written in standard markdown
-- Supports all markdown features (headings, lists, links, images, etc.)
 
 ```markdown
 ---

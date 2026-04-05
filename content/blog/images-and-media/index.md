@@ -7,13 +7,13 @@ tags: ["tutorial", "images", "media"]
 
 ## Adding Images to Your Posts
 
-One of the basics of any blog is embedding images. Just use standard markdown syntax and put your files in the `public/images/` folder.
+One of the basics of any blog is embedding images. Place your article images in the `images/` folder next to your `index.md` file and use relative paths.
 
 ### A Landscape Photo
 
 Here's a demo landscape image:
 
-![A beautiful landscape scene](/images/demo-landscape.svg)
+![A beautiful landscape scene](./images/demo-landscape.svg)
 
 Images are automatically styled to be responsive — they scale down on smaller screens and have rounded corners.
 
@@ -21,7 +21,7 @@ Images are automatically styled to be responsive — they scale down on smaller 
 
 You can also include screenshots of your development workflow:
 
-![Terminal showing build commands](/images/demo-code-setup.svg)
+![Terminal showing build commands](./images/demo-code-setup.svg)
 
 This is great for tutorials where you want to show terminal output or IDE screenshots.
 
@@ -29,11 +29,11 @@ This is great for tutorials where you want to show terminal output or IDE screen
 
 A few things to keep in mind:
 
-- Place all images in `public/images/`
-- Reference them with `/images/filename.ext` in your markdown
+- Place article images in the `images/` folder next to your `index.md`
+- Reference them with relative paths like `./images/filename.ext`
 - Supported formats: PNG, JPG, GIF, SVG, WebP
 - Images are automatically responsive (max-width: 100%)
-- If using **Typora**, configure it to save pasted images to `../../public/images`
+- If using **Typora**, configure it to save pasted images to `./images`
 
 ## Embedding Videos
 
@@ -79,9 +79,9 @@ And here's how the image pipeline works:
 ```mermaid
 flowchart LR
     A[Write in Typora] --> B[Paste Image]
-    B --> C[Saved to public/images/]
+    B --> C[Saved to ./images/]
     C --> D[npm run build]
-    D --> E[Copied to docs/images/]
+    D --> E[Copied to docs/]
     E --> F[Live on GitHub Pages]
 ```
 
