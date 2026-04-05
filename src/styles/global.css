@@ -389,6 +389,37 @@ a:hover {
 .post-content hr { border: none; border-top: 1px solid var(--color-border); margin-block: var(--space-lg); }
 .post-content strong { font-weight: 600; }
 
+/* ===== Tables ===== */
+.post-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-block: var(--space-md);
+  font-size: 0.9rem;
+  overflow-x: auto;
+  display: block;
+}
+.post-content thead {
+  border-bottom: 2px solid var(--color-border);
+}
+.post-content th {
+  text-align: left;
+  font-weight: 600;
+  padding: var(--space-sm) var(--space-md);
+  color: var(--color-text);
+  white-space: nowrap;
+}
+.post-content td {
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+}
+.post-content tbody tr:last-child td {
+  border-bottom: none;
+}
+.post-content tbody tr:hover {
+  background: var(--color-code-bg);
+}
+
 /* ===== Code Blocks ===== */
 pre {
   background: #24292e;
