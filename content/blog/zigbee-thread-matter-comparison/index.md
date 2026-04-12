@@ -1350,8 +1350,20 @@ graph LR
    - 提高可靠性
    - **Bridge 设备必须在线**
 
+## 对比与选型
 
-## 技术对比与选型
+### 协议标识
+
+在设备详情、外包装或说明书里，经常可以看到下面的小图标，标明**支持或兼容**的无线/生态能力：
+
+|                       标识                        | 常见含义                                                     |
+| :-----------------------------------------------: | :----------------------------------------------------------- |
+| ![Zigbee 认证/兼容标识](./images/zigbee-icon.png) | **Zigbee**：基于 Zigbee 3.0 / ZCL 的低功耗 mesh 设备，常需配合品牌网关或支持 Zigbee 的多模中枢。 |
+|   ![Thread 网络标识](./images/thread-icon.png)    | **Thread**：设备可作为 Thread mesh 节点（多为 Router/SED）；若同时标 **Matter**，通常表示 Matter 跑在 Thread 承载上。 |
+|   ![Matter 认证标识](./images/matter-icon.png)    | **Matter**：经 CSA 认证的 Matter 设备，可与支持 Matter 的控制器（手机 App、音箱、桥接器等）按标准配对，传输可走 Thread 或 Wi‑Fi 等。 |
+|  ![HomeKit 兼容标识](./images/homekit-icon.png)   | **HomeKit / Apple Home**：可与 Apple「家庭」App 及 Home 中枢协同（本地控制、场景、Siri 等）；可能是原生 HomeKit，也可能是经认证的桥接/网关间接支持。 |
+
+同一产品可能并列多个图标（例如同时 **Matter + Thread + HomeKit**），表示在各自生态下均声明了兼容路径；是否**无需额外网关**、是否支持 **Thread Border Router** 等，仍要以规格表为准。
 
 ### 综合对比
 

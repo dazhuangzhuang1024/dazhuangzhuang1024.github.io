@@ -1360,7 +1360,36 @@
 </ul>
 </li>
 </ol>
-<h2 id="技术对比与选型">技术对比与选型</h2>
+<h2 id="对比与选型">对比与选型</h2>
+<h3 id="协议标识">协议标识</h3>
+<p>在设备详情、外包装或说明书里，经常可以看到下面的小图标，标明<strong>支持或兼容</strong>的无线/生态能力：</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th align="center">标识</th><th align="left">常见含义</th></tr></thead><tbody><tr><td align="center"><img src="/_ci/blog/zigbee-thread-matter-comparison/images/zigbee-icon.png" alt="Zigbee 认证/兼容标识"></td><td align="left"><strong>Zigbee</strong>：基于 Zigbee 3.0 / ZCL 的低功耗 mesh 设备，常需配合品牌网关或支持 Zigbee 的多模中枢。</td></tr><tr><td align="center"><img src="/_ci/blog/zigbee-thread-matter-comparison/images/thread-icon.png" alt="Thread 网络标识"></td><td align="left"><strong>Thread</strong>：设备可作为 Thread mesh 节点（多为 Router/SED）；若同时标 <strong>Matter</strong>，通常表示 Matter 跑在 Thread 承载上。</td></tr><tr><td align="center"><img src="/_ci/blog/zigbee-thread-matter-comparison/images/matter-icon.png" alt="Matter 认证标识"></td><td align="left"><strong>Matter</strong>：经 CSA 认证的 Matter 设备，可与支持 Matter 的控制器（手机 App、音箱、桥接器等）按标准配对，传输可走 Thread 或 Wi‑Fi 等。</td></tr><tr><td align="center"><img src="/_ci/blog/zigbee-thread-matter-comparison/images/homekit-icon.png" alt="HomeKit 兼容标识"></td><td align="left"><strong>HomeKit / Apple Home</strong>：可与 Apple「家庭」App 及 Home 中枢协同（本地控制、场景、Siri 等）；可能是原生 HomeKit，也可能是经认证的桥接/网关间接支持。</td></tr></tbody></table>
+<p>同一产品可能并列多个图标（例如同时 <strong>Matter + Thread + HomeKit</strong>），表示在各自生态下均声明了兼容路径；是否<strong>无需额外网关</strong>、是否支持 <strong>Thread Border Router</strong> 等，仍要以规格表为准。</p>
 <h3 id="综合对比">综合对比</h3>
 
 
@@ -1521,7 +1550,7 @@
             });
             observer.observe(document.querySelector('.comments'), { childList: true, subtree: true });
           })();
-        </script> </section> </article> <aside class="toc"> <nav> <h4>Outline</h4> <ul> <li class="toc-depth-2"> <a href="#引言">引言</a> </li><li class="toc-depth-2"> <a href="#部署示例">部署示例</a> </li><li class="toc-depth-3"> <a href="#协议栈层级总览">协议栈层级总览</a> </li><li class="toc-depth-2"> <a href="#zigbee-简介">Zigbee 简介</a> </li><li class="toc-depth-3"> <a href="#演变历史">演变历史</a> </li><li class="toc-depth-3"> <a href="#网络角色">网络角色</a> </li><li class="toc-depth-3"> <a href="#coordinator-单点问题">Coordinator 单点问题</a> </li><li class="toc-depth-2"> <a href="#thread-协议详解">Thread 协议详解</a> </li><li class="toc-depth-3"> <a href="#thread-核心设计">Thread 核心设计</a> </li><li class="toc-depth-3"> <a href="#thread-border-router-详解">Thread Border Router 详解</a> </li><li class="toc-depth-3"> <a href="#thread-技术特性">Thread 技术特性</a> </li><li class="toc-depth-2"> <a href="#matter-协议详解">Matter 协议详解</a> </li><li class="toc-depth-3"> <a href="#matter-架构设计">Matter 架构设计</a> </li><li class="toc-depth-3"> <a href="#matter-bridge-机制">Matter Bridge 机制</a> </li><li class="toc-depth-3"> <a href="#matter-核心概念">Matter 核心概念</a> </li><li class="toc-depth-3"> <a href="#matter-传输层选择">Matter 传输层选择</a> </li><li class="toc-depth-2"> <a href="#apple-home-生态系统">Apple Home 生态系统</a> </li><li class="toc-depth-3"> <a href="#homekit-vs-home-app-vs-icloud">HomeKit vs Home App vs iCloud</a> </li><li class="toc-depth-3"> <a href="#homekit-技术架构">HomeKit 技术架构</a> </li><li class="toc-depth-3"> <a href="#home-app-功能架构">Home App 功能架构</a> </li><li class="toc-depth-3"> <a href="#icloud-在智能家居中的角色">iCloud 在智能家居中的角色</a> </li><li class="toc-depth-3"> <a href="#apple-home-多协议集成">Apple Home 多协议集成</a> </li><li class="toc-depth-2"> <a href="#技术对比与选型">技术对比与选型</a> </li><li class="toc-depth-3"> <a href="#综合对比">综合对比</a> </li><li class="toc-depth-3"> <a href="#选型建议">选型建议</a> </li><li class="toc-depth-2"> <a href="#结论">结论</a> </li><li class="toc-depth-2"> <a href="#参考资料">参考资料</a> </li> </ul> </nav> </aside> </div>  </main> <footer> <p>&copy; 2026 Blog</p> </footer> <script>
+        </script> </section> </article> <aside class="toc"> <nav> <h4>Outline</h4> <ul> <li class="toc-depth-2"> <a href="#引言">引言</a> </li><li class="toc-depth-2"> <a href="#部署示例">部署示例</a> </li><li class="toc-depth-3"> <a href="#协议栈层级总览">协议栈层级总览</a> </li><li class="toc-depth-2"> <a href="#zigbee-简介">Zigbee 简介</a> </li><li class="toc-depth-3"> <a href="#演变历史">演变历史</a> </li><li class="toc-depth-3"> <a href="#网络角色">网络角色</a> </li><li class="toc-depth-3"> <a href="#coordinator-单点问题">Coordinator 单点问题</a> </li><li class="toc-depth-2"> <a href="#thread-协议详解">Thread 协议详解</a> </li><li class="toc-depth-3"> <a href="#thread-核心设计">Thread 核心设计</a> </li><li class="toc-depth-3"> <a href="#thread-border-router-详解">Thread Border Router 详解</a> </li><li class="toc-depth-3"> <a href="#thread-技术特性">Thread 技术特性</a> </li><li class="toc-depth-2"> <a href="#matter-协议详解">Matter 协议详解</a> </li><li class="toc-depth-3"> <a href="#matter-架构设计">Matter 架构设计</a> </li><li class="toc-depth-3"> <a href="#matter-bridge-机制">Matter Bridge 机制</a> </li><li class="toc-depth-3"> <a href="#matter-核心概念">Matter 核心概念</a> </li><li class="toc-depth-3"> <a href="#matter-传输层选择">Matter 传输层选择</a> </li><li class="toc-depth-2"> <a href="#apple-home-生态系统">Apple Home 生态系统</a> </li><li class="toc-depth-3"> <a href="#homekit-vs-home-app-vs-icloud">HomeKit vs Home App vs iCloud</a> </li><li class="toc-depth-3"> <a href="#homekit-技术架构">HomeKit 技术架构</a> </li><li class="toc-depth-3"> <a href="#home-app-功能架构">Home App 功能架构</a> </li><li class="toc-depth-3"> <a href="#icloud-在智能家居中的角色">iCloud 在智能家居中的角色</a> </li><li class="toc-depth-3"> <a href="#apple-home-多协议集成">Apple Home 多协议集成</a> </li><li class="toc-depth-2"> <a href="#对比与选型">对比与选型</a> </li><li class="toc-depth-3"> <a href="#协议标识">协议标识</a> </li><li class="toc-depth-3"> <a href="#综合对比">综合对比</a> </li><li class="toc-depth-3"> <a href="#选型建议">选型建议</a> </li><li class="toc-depth-2"> <a href="#结论">结论</a> </li><li class="toc-depth-2"> <a href="#参考资料">参考资料</a> </li> </ul> </nav> </aside> </div>  </main> <footer> <p>&copy; 2026 Blog</p> </footer> <script>
       (function() {
         const btn = document.getElementById('theme-toggle');
         btn.addEventListener('click', () => {
