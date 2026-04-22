@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.38/dist/katex.min.css" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.38/dist/katex.min.js" crossorigin="anonymous"></script>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--border:#334155;--text:#e2e8f0;--dim:#94a3b8;--accent:#3b82f6;--green:#4ade80;--red:#f87171;--orange:#fb923c;--purple:#a78bfa;--teal:#2dd4bf}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:16px;font-size:15px;line-height:1.5}
+.scene{font-size:0.9em;color:var(--dim);margin-bottom:10px;padding:6px 10px;background:var(--card);border-radius:6px;border:1px solid var(--border)}.scene b{color:var(--text)}
+.info{background:var(--card);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:12px;font-size:0.9em;min-height:40px;display:flex;align-items:center}
+.controls{display:flex;gap:8px;margin-bottom:14px}
+.btn{padding:7px 18px;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:0.85em;font-weight:600;transition:all 0.2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.bn{background:var(--accent);color:#fff}.br{background:var(--card);color:var(--dim);border:1px solid var(--border)}.ba{background:#059669;color:#fff}
+.pbox{border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px}
+.plbl{font-size:0.85em;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.plbl .d{width:10px;height:10px;border-radius:50%}
+.stitle{font-size:0.75em;font-weight:600;color:var(--dim);margin:10px 0 4px;text-transform:uppercase;letter-spacing:0.05em}
+.g{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;margin-bottom:4px}
+.m{display:flex;flex-direction:column;align-items:center}
+.ml{font-size:0.85em;font-weight:700;color:var(--dim);letter-spacing:0.04em;margin-bottom:1px}
+.ms{font-size:0.7em;color:var(--accent);margin-bottom:4px;font-weight:600}
+table{border-collapse:collapse;background:var(--card);border-radius:5px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.15)}
+td.c{width:44px;height:30px;text-align:center;vertical-align:middle;border:1px solid var(--border);font-size:0.9em;font-weight:500;transition:all 0.3s;color:var(--text);font-variant-numeric:tabular-nums}
+td.cw{width:56px}
+.ar{color:var(--dim);font-size:1em;display:flex;align-items:center;padding:0 2px;margin-top:10px}
+.sn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:0.7em;font-weight:700;margin-right:6px;flex-shrink:0}
+.eq{font-size:0.85em;color:var(--dim);margin:3px 0;padding:3px 8px;background:#0f172a;border-radius:4px;font-family:monospace;min-height:1.4em}.eq b{color:var(--green)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+var d=4,dc=2,L=2; // 2 past tokens for attention
+var h_t=[1.0,0.5,-0.3,0.8]; // current token hidden state
+var h_1=[0.7,-0.4,0.2,0.5]; // past token 1
+var h_2=[-0.1,0.8,0.6,-0.3]; // past token 2
+
+// Down-projection for KV compression
+var W_D=[[0.3,0.1,-0.2,0.4],[-0.1,0.2,0.3,-0.2]]; // dc x d
+
+// Up-projection for K recovery (slow path)
+var W_UK=[[0.5,-0.1],[0.2,0.3],[-0.1,0.4],[0.3,0.0]]; // d x dc
+
+// Query projection
+var W_Q=[[0.4,0.1,-0.3,0.2],[-0.2,0.5,0.1,0.3],[0.3,-0.1,0.2,0.4],[0.1,0.2,-0.4,0.1]]; // d x d
+
+// Absorbed W_tilde = W_Q^T * W_UK -> then q_tilde = W_tilde^T * h_t
+// For simplicity we pre-compute W_tilde_T: dc x d
+var W_tildeT=[[0.32,-0.04,0.02,0.15],[-0.08,0.14,0.20,-0.06]]; // dc x d
+
+// Up-projection for V recovery
+var W_UV=[[0.6,0.1],[0.0,0.5],[-0.2,0.3],[0.4,-0.1]]; // d x dc
+
+var step=0,tmr=null;
+var c1=[],c2=[],q_full=[],k1_full=[],k2_full=[],scores_slow=[],weights_slow=[];
+var q_til=[],scores_fast=[],weights_fast=[];
+var v1_full=[],v2_full=[],out_slow=[],out_fast=[];
+
+function f1(v){return v>=0?v.toFixed(1):v.toFixed(1)}
+function f2(v){return v>=0?v.toFixed(2):v.toFixed(2)}
+function f3(v){return v>=0?v.toFixed(3):v.toFixed(3)}
+function dot(a,b){var s=0;for(var i=0;i<a.length;i++)s+=a[i]*b[i];return s}
+function tex(s){try{return katex.renderToString(s,{throwOnError:false})}catch(e){return s}}
+function mv(M,v){return M.map(function(r){return dot(r,v)})}
+function softmax(a){var mx=Math.max.apply(null,a);var e=a.map(function(v){return Math.exp(v-mx)});var s=e.reduce(function(a,b){return a+b},0);return e.map(function(v){return v/s})}
+
+function cell(id,v,cls){return '<td class="c'+(cls?' '+cls:'')+'" id="'+id+'">'+v+'</td>'}
+function hl(id,c){var e=document.getElementById(id);if(e){e.style.background=c;e.style.color='#fff';e.style.boxShadow='0 0 6px '+c+'55'}}
+function un(id){var e=document.getElementById(id);if(e){e.style.background='';e.style.color='var(--text)';e.style.boxShadow='none'}}
+function sc(id,v,c){var e=document.getElementById(id);if(e){e.textContent=v;if(c){e.style.color='#fff';e.style.background=c;e.style.boxShadow='0 0 6px '+c+'55'}}}
+function info(n,t){document.getElementById('info').innerHTML='<span class="sn">'+n+'</span>'+t}
+function setEq(id,t){var e=document.getElementById(id);if(e)e.innerHTML=t}
+
+// collect all cell ids for clearing
+var allIds=[];
+function regId(id){allIds.push(id);return id}
+function clr(){allIds.forEach(un)}
+
+function render(){
+c1=[];c2=[];q_full=[];k1_full=[];k2_full=[];scores_slow=[];weights_slow=[];
+q_til=[];scores_fast=[];weights_fast=[];v1_full=[];v2_full=[];out_slow=[];out_fast=[];
+allIds=[];step=0;
+
+var h='<div class="scene">场景：<b>token t=3</b> 对 <b>token 1, 2</b> 做 MLA attention（d='+d+', d_c='+dc+'）。对比慢路径（上投影后 '+d+' 维点积）和快路径（absorption，'+dc+' 维点积）的完整计算。</div>';
+h+='<div class="info" id="info">点击 <b>下一步</b> 从 '+tex('\\mathbf{h}_t')+' 开始，逐步走完 MLA 的全部计算</div>';
+h+='<div class="controls"><button class="btn bn" onclick="prev()">⏮ 上一步</button><button class="btn bn" onclick="go()">⏭ 下一步</button><button class="btn br" onclick="rst()">↺ 重置</button><button class="btn ba" onclick="play()">▶ 自动播放</button></div>';
+
+// === Shared: Compression ===
+h+='<div class="stitle">第一阶段：KV 压缩（推理时缓存 c，两条路径共用）</div>';
+h+='<div class="g">';
+h+=mat(tex('W^{DKV}'),'d_c×d='+dc+'×'+d,W_D,dc,d,'wd');
+h+=ar('×');
+h+=vec_col(tex('\\mathbf{h}_1'),'d='+d,h_1,'h1');
+h+=ar('→');
+h+=vec_col_empty(tex('\\mathbf{c}_1^{KV}'),'d_c='+dc,dc,'c1');
+h+=ar('');
+h+=vec_col(tex('\\mathbf{h}_2'),'d='+d,h_2,'h2');
+h+=ar('→');
+h+=vec_col_empty(tex('\\mathbf{c}_2^{KV}'),'d_c='+dc,dc,'c2');
+h+='</div>';
+h+='<div class="eq" id="eq_compress"></div>';
+
+// === Slow path ===
+h+='<div class="pbox" style="border-color:#f8717133;margin-top:10px">';
+h+='<div class="plbl"><span class="d" style="background:var(--red)"></span>慢路径：'+tex('\\mathbf{q}_t = W^Q \\mathbf{h}_t')+', '+tex('\\mathbf{k}_j = W^{UK} \\mathbf{c}_j')+', '+tex('\\text{score} = \\mathbf{q}_t^\\top \\mathbf{k}_j')+'（'+d+'维点积）</div>';
+
+h+='<div class="stitle">Query 投影</div>';
+h+='<div class="g">';
+h+=mat(tex('W^Q'),'d×d='+d+'×'+d,W_Q,d,d,'wq');
+h+=ar('×');
+h+=vec_col(tex('\\mathbf{h}_t'),'d='+d,h_t,'ht_s');
+h+=ar('→');
+h+=vec_col_empty(tex('\\mathbf{q}_t'),'d='+d,d,'qt_s');
+h+='</div>';
+h+='<div class="eq" id="eq_q"></div>';
+
+h+='<div class="stitle">K 上投影 + Score</div>';
+h+='<div class="g">';
+h+=mat(tex('W^{UK}'),'d×d_c='+d+'×'+dc,W_UK,d,dc,'wuk');
+h+=ar('×');
+h+=vec_col_empty(tex('\\mathbf{c}_1^{KV}'),'d_c',dc,'c1s');
+h+=ar('→');
+h+=vec_col_empty(tex('\\mathbf{k}_1'),'d='+d,d,'k1s');
+h+=ar('·q→');
+h+=scalar_empty('s₁','sc1s');
+h+=ar('');
+h+=vec_col_empty(tex('\\mathbf{c}_2^{KV}'),'d_c',dc,'c2s');
+h+=ar('→');
+h+=vec_col_empty(tex('\\mathbf{k}_2'),'d='+d,d,'k2s');
+h+=ar('·q→');
+h+=scalar_empty('s₂','sc2s');
+h+='</div>';
+h+='<div class="eq" id="eq_slow_score"></div>';
+
+h+='<div class="stitle">Softmax + 加权求和</div>';
+h+='<div class="g">';
+h+=scalar_empty('α₁','a1s');
+h+=scalar_empty('α₂','a2s');
+h+=ar('→');
+h+=vec_col_empty('output','d='+d,d,'out_s');
+h+='</div>';
+h+='<div class="eq" id="eq_slow_out"></div>';
+h+='</div>';
+
+// === Fast path ===
+h+='<div class="pbox" style="border-color:#4ade8033">';
+h+='<div class="plbl"><span class="d" style="background:var(--green)"></span>快路径（absorption）：'+tex('\\tilde{\\mathbf{q}}_t = \\tilde{W} \\mathbf{h}_t')+', '+tex('\\text{score} = \\tilde{\\mathbf{q}}_t^\\top \\mathbf{c}_j')+'（'+dc+'维点积）</div>';
+
+h+='<div class="stitle">吸收后 Query</div>';
+h+='<div class="g">';
+h+=mat(tex('\\tilde{W}'),'d_c×d='+dc+'×'+d,W_tildeT,dc,d,'wab');
+h+=ar('×');
+h+=vec_col(tex('\\mathbf{h}_t'),'d='+d,h_t,'ht_f');
+h+=ar('→');
+h+=vec_col_empty(tex('\\tilde{\\mathbf{q}}_t'),'d_c='+dc,dc,'qtil');
+h+='</div>';
+h+='<div class="eq" id="eq_qtil"></div>';
+
+h+='<div class="stitle">Score（直接在 latent 空间）</div>';
+h+='<div class="g">';
+h+=vec_row_empty(tex('\\tilde{\\mathbf{q}}_t'),'',dc,'qtil2');
+h+=ar('·');
+h+=vec_col_empty(tex('\\mathbf{c}_1^{KV}'),'',dc,'c1f');
+h+=ar('→');
+h+=scalar_empty(tex('s_1'),'sc1f');
+h+=ar('');
+h+=vec_col_empty(tex('\\mathbf{c}_2^{KV}'),'',dc,'c2f');
+h+=ar('→');
+h+=scalar_empty(tex('s_2'),'sc2f');
+h+='</div>';
+h+='<div class="eq" id="eq_fast_score"></div>';
+
+h+='<div class="stitle">Softmax + 加权求和（用 V 上投影后的值）</div>';
+h+='<div class="g">';
+h+=scalar_empty('α₁','a1f');
+h+=scalar_empty('α₂','a2f');
+h+=ar('→');
+h+=vec_col_empty('output','d='+d,d,'out_f');
+h+='</div>';
+h+='<div class="eq" id="eq_fast_out"></div>';
+h+='</div>';
+
+document.getElementById('root').innerHTML=h;
+}
+
+function mat(label,shape,data,rows,cols,prefix){
+var h='<div class="m"><div class="ml">'+label+'</div><div class="ms">'+shape+'</div><table>';
+for(var r=0;r<rows;r++){h+='<tr>';for(var c=0;c<cols;c++){var id=regId(prefix+r+c);h+='<td class="c" id="'+id+'">'+f1(data[r][c])+'</td>';}h+='</tr>';}
+h+='</table></div>';return h}
+function vec_col(label,shape,data,prefix){
+var h='<div class="m"><div class="ml">'+label+'</div><div class="ms">'+shape+'</div><table>';
+for(var i=0;i<data.length;i++){var id=regId(prefix+i);h+='<tr><td class="c" id="'+id+'">'+f1(data[i])+'</td></tr>';}
+h+='</table></div>';return h}
+function vec_col_empty(label,shape,n,prefix){
+var h='<div class="m"><div class="ml">'+label+'</div><div class="ms">'+shape+'</div><table>';
+for(var i=0;i<n;i++){var id=regId(prefix+i);h+='<tr><td class="c cw" id="'+id+'" style="color:var(--dim)">—</td></tr>';}
+h+='</table></div>';return h}
+function vec_row_empty(label,shape,n,prefix){
+var h='<div class="m"><div class="ml">'+label+'</div><div class="ms">'+shape+'</div><table><tr>';
+for(var i=0;i<n;i++){var id=regId(prefix+i);h+='<td class="c cw" id="'+id+'" style="color:var(--dim)">—</td>';}
+h+='</tr></table></div>';return h}
+function scalar_empty(label,id){regId(id);return '<div class="m"><div class="ml">'+label+'</div><div class="ms">标量</div><table><tr><td class="c cw" id="'+id+'" style="color:var(--dim)">—</td></tr></table></div>'}
+function ar(t){return '<div class="ar">'+t+'</div>'}
+
+render();
+
+var rc='#f87171',oc='#fb923c',bc='#60a5fa',gc='#4ade80',pc='#a78bfa',tc='#2dd4bf';
+
+var steps=[
+// 1: compress h1 -> c1
+function(){clr();info(1,'压缩 token 1：'+tex('\\mathbf{c}_1^{KV} = W^{DKV} \\cdot \\mathbf{h}_1'));
+for(var r=0;r<dc;r++)for(var c=0;c<d;c++)hl('wd'+r+c,rc);
+for(var i=0;i<d;i++)hl('h1'+i,rc);
+c1=mv(W_D,h_1);for(var i=0;i<dc;i++)sc('c1'+i,f2(c1[i]),rc);
+setEq('eq_compress',tex('\\mathbf{c}_1^{KV}')+' = ['+c1.map(f2).join(', ')+'] — 从 '+d+' 维压缩到 '+dc+' 维')},
+// 2: compress h2 -> c2
+function(){clr();info(2,'压缩 token 2：'+tex('\\mathbf{c}_2^{KV} = W^{DKV} \\cdot \\mathbf{h}_2'));
+for(var r=0;r<dc;r++)for(var c=0;c<d;c++)hl('wd'+r+c,bc);
+for(var i=0;i<d;i++)hl('h2'+i,bc);
+c2=mv(W_D,h_2);for(var i=0;i<dc;i++)sc('c2'+i,f2(c2[i]),bc);
+setEq('eq_compress',tex('\\mathbf{c}_2^{KV}')+' = ['+c2.map(f2).join(', ')+'] — 推理时只缓存 '+tex('\\mathbf{c}_1, \\mathbf{c}_2')+'（各 '+dc+' 个元素）')},
+
+// === SLOW PATH ===
+// 3: q_t = W_Q * h_t
+function(){clr();info(3,'慢路径 — Query：'+tex('\\mathbf{q}_t = W^Q \\cdot \\mathbf{h}_t'));
+for(var r=0;r<d;r++)for(var c=0;c<d;c++)hl('wq'+r+c,pc);
+for(var i=0;i<d;i++)hl('ht_s'+i,pc);
+q_full=mv(W_Q,h_t);for(var i=0;i<d;i++)sc('qt_s'+i,f2(q_full[i]),pc);
+setEq('eq_q',tex('\\mathbf{q}_t')+' = ['+q_full.map(f2).join(', ')+']')},
+// 4: k1 = W_UK * c1
+function(){clr();info(4,'慢路径 — 上投影 token 1：'+tex('\\mathbf{k}_1 = W^{UK} \\cdot \\mathbf{c}_1^{KV}')+'（对每个缓存 token 都要做！）');
+for(var r=0;r<d;r++)for(var c=0;c<dc;c++)hl('wuk'+r+c,rc);
+for(var i=0;i<dc;i++){sc('c1s'+i,f2(c1[i]),rc);hl('c1s'+i,rc)}
+k1_full=mv(W_UK,c1);for(var i=0;i<d;i++)sc('k1s'+i,f2(k1_full[i]),rc);
+setEq('eq_slow_score',tex('\\mathbf{k}_1')+' = ['+k1_full.map(f2).join(', ')+'] — '+d+'×'+dc+' 矩阵乘法')},
+// 5: k2 = W_UK * c2
+function(){clr();info(5,'慢路径 — 上投影 token 2：'+tex('\\mathbf{k}_2 = W^{UK} \\cdot \\mathbf{c}_2^{KV}')+'（又一次矩阵乘法）');
+for(var r=0;r<d;r++)for(var c=0;c<dc;c++)hl('wuk'+r+c,bc);
+for(var i=0;i<dc;i++){sc('c2s'+i,f2(c2[i]),bc);hl('c2s'+i,bc)}
+k2_full=mv(W_UK,c2);for(var i=0;i<d;i++)sc('k2s'+i,f2(k2_full[i]),bc);
+setEq('eq_slow_score',tex('\\mathbf{k}_2')+' = ['+k2_full.map(f2).join(', ')+'] — 每个缓存 token 都要做一次上投影')},
+// 6: score1 = q_t . k1, score2 = q_t . k2
+function(){clr();info(6,'慢路径 — Score：'+tex('\\mathbf{q}_t^\\top \\cdot \\mathbf{k}_j')+'（'+d+' 维点积 × '+L+' 个 token）');
+for(var i=0;i<d;i++){hl('qt_s'+i,pc);hl('k1s'+i,rc);hl('k2s'+i,bc)}
+scores_slow[0]=dot(q_full,k1_full)/Math.sqrt(d);scores_slow[1]=dot(q_full,k2_full)/Math.sqrt(d);
+sc('sc1s',f3(scores_slow[0]),rc);sc('sc2s',f3(scores_slow[1]),bc);
+setEq('eq_slow_score',tex('s_1')+'='+f3(scores_slow[0])+', '+tex('s_2')+'='+f3(scores_slow[1])+' （'+d+' 维点积 / '+tex('\\sqrt{'+d+'}')+'）')},
+// 7: softmax + weighted sum (slow)
+function(){clr();info(7,'慢路径 — Softmax + 加权求和');
+weights_slow=softmax(scores_slow);
+sc('a1s',(weights_slow[0]*100).toFixed(1)+'%',rc);sc('a2s',(weights_slow[1]*100).toFixed(1)+'%',bc);
+// recover V and compute output
+v1_full=mv(W_UV,c1);v2_full=mv(W_UV,c2);
+out_slow=[];for(var i=0;i<d;i++)out_slow[i]=weights_slow[0]*v1_full[i]+weights_slow[1]*v2_full[i];
+for(var i=0;i<d;i++)sc('out_s'+i,f3(out_slow[i]),gc);
+setEq('eq_slow_out',tex('\\alpha')+'=['+weights_slow.map(function(w){return(w*100).toFixed(1)+'%'}).join(', ')+'] → output = ['+out_slow.map(f3).join(', ')+']')},
+
+// === FAST PATH ===
+// 8: q_tilde = W_tildeT * h_t
+function(){clr();info(8,'快路径 — 吸收后 Query：'+tex('\\tilde{\\mathbf{q}}_t = \\tilde{W} \\cdot \\mathbf{h}_t')+'（只做一次，'+dc+'×'+d+' 矩阵乘法）');
+for(var r=0;r<dc;r++)for(var c=0;c<d;c++)hl('wab'+r+c,gc);
+for(var i=0;i<d;i++)hl('ht_f'+i,gc);
+q_til=mv(W_tildeT,h_t);for(var i=0;i<dc;i++)sc('qtil'+i,f3(q_til[i]),gc);
+setEq('eq_qtil',tex('\\tilde{\\mathbf{q}}_t')+' = ['+q_til.map(f3).join(', ')+'] — 吸收了 '+tex('W^Q')+' 和 '+tex('W^{UK}')+'，直接投影到 '+dc+' 维')},
+// 9: score = q_tilde . c_j (2-dim dot products)
+function(){clr();info(9,'快路径 — Score：'+tex('\\tilde{\\mathbf{q}}_t^\\top \\cdot \\mathbf{c}_j^{KV}')+'（'+dc+' 维点积，不需要上投影！）');
+for(var i=0;i<dc;i++){sc('qtil2'+i,f3(q_til[i]),gc);hl('qtil2'+i,gc)}
+for(var i=0;i<dc;i++){sc('c1f'+i,f2(c1[i]),rc);hl('c1f'+i,rc)}
+for(var i=0;i<dc;i++){sc('c2f'+i,f2(c2[i]),bc);hl('c2f'+i,bc)}
+scores_fast[0]=dot(q_til,c1)/Math.sqrt(dc);scores_fast[1]=dot(q_til,c2)/Math.sqrt(dc);
+sc('sc1f',f3(scores_fast[0]),rc);sc('sc2f',f3(scores_fast[1]),bc);
+setEq('eq_fast_score',tex('s_1')+'='+f3(scores_fast[0])+', '+tex('s_2')+'='+f3(scores_fast[1])+' （'+dc+' 维点积 / '+tex('\\sqrt{'+dc+'}')+' — 比慢路径快 '+(d/dc)+'×）')},
+// 10: softmax + output (fast)
+function(){clr();info(10,'快路径 — Softmax + 加权求和');
+weights_fast=softmax(scores_fast);
+sc('a1f',(weights_fast[0]*100).toFixed(1)+'%',rc);sc('a2f',(weights_fast[1]*100).toFixed(1)+'%',bc);
+v1_full=mv(W_UV,c1);v2_full=mv(W_UV,c2);
+out_fast=[];for(var i=0;i<d;i++)out_fast[i]=weights_fast[0]*v1_full[i]+weights_fast[1]*v2_full[i];
+for(var i=0;i<d;i++)sc('out_f'+i,f3(out_fast[i]),gc);
+setEq('eq_fast_out',tex('\\alpha')+'=['+weights_fast.map(function(w){return(w*100).toFixed(1)+'%'}).join(', ')+'] → output = ['+out_fast.map(f3).join(', ')+']')},
+// 11: compare
+function(){clr();info(11,'✅ 完成！快路径省掉了对每个缓存 token 的上投影（'+d+'×'+dc+' 矩阵乘法 × '+L+' 次），score 只需 '+dc+' 维点积');
+for(var i=0;i<d;i++){sc('out_s'+i,f3(out_slow[i]),rc);sc('out_f'+i,f3(out_fast[i]),gc)}
+setEq('eq_slow_out','慢路径总计算：'+tex('W^Q \\cdot \\mathbf{h}_t')+' + '+L+'×('+tex('W^{UK} \\cdot \\mathbf{c}_j')+') + '+L+'×('+d+'维点积) + V上投影');
+setEq('eq_fast_out','快路径总计算：'+tex('\\tilde{W} \\cdot \\mathbf{h}_t')+'（一次）+ '+L+'×(<b>'+dc+'维点积</b>）+ V上投影 — 省掉了 '+L+' 次 K 上投影')}
+];
+
+function go(){if(step>=steps.length)return;steps[step]();step++}
+function prev(){if(step<=1){rst();return}var t=step-2;rst();for(var i=0;i<=t;i++){steps[i]();step=i+1}}
+function rst(){if(tmr){clearInterval(tmr);tmr=null}render()}
+function play(){rst();var i=0;tmr=setInterval(function(){if(i>=steps.length){clearInterval(tmr);tmr=null;return}step=i;go();i++},1800)}
+// need W_UV for V recovery
+var W_UV=[[0.6,0.1],[0.0,0.5],[-0.2,0.3],[0.4,-0.1]]; // d x dc
+</script>
+</body>
+</html>

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.38/dist/katex.min.css" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.38/dist/katex.min.js" crossorigin="anonymous"></script>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--border:#334155;--text:#e2e8f0;--dim:#94a3b8;--accent:#3b82f6;--green:#4ade80}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:20px;font-size:15px;line-height:1.5}
+.params{display:inline-block;background:var(--card);border:1px solid var(--border);padding:4px 12px;border-radius:6px;font-size:0.8em;color:var(--dim);margin-bottom:12px}
+.params b{color:var(--accent)}
+.info{background:var(--card);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:16px;font-size:0.9em;min-height:44px;display:flex;align-items:center}
+.controls{display:flex;gap:8px;margin-bottom:20px}
+.btn{padding:8px 20px;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:0.85em;font-weight:600;transition:all 0.2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.btn:active{transform:translateY(0)}
+.btn-next{background:var(--accent);color:#fff}
+.btn-reset{background:var(--card);color:var(--dim);border:1px solid var(--border)}
+.btn-auto{background:#059669;color:#fff}
+.grid{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+.mat{display:flex;flex-direction:column;align-items:center}
+.mat-label{font-size:0.9em;font-weight:700;color:var(--dim);letter-spacing:0.08em;margin-bottom:2px}
+.mat-shape{font-size:0.75em;color:var(--accent);margin-bottom:8px;font-weight:600}
+table{border-collapse:collapse;background:var(--card);border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.2)}
+td.c{width:48px;height:34px;text-align:center;vertical-align:middle;border:1px solid var(--border);font-size:0.95em;font-weight:500;transition:all 0.35s ease;color:var(--text);font-variant-numeric:tabular-nums}
+td.cw{width:64px}
+.arrow{color:var(--dim);font-size:1.4em;display:flex;align-items:center;padding:0 2px;margin-top:20px}
+.step-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:0.75em;font-weight:700;margin-right:8px;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+var Q=[0.5,-0.2,0.8,0.1],K=[[0.3,0.7,-0.1,0.4],[-0.4,0.2,0.6,-0.3],[0.6,-0.1,0.3,0.5]],V=[[0.2,0.4,-0.1,0.3],[-0.3,0.1,0.5,0.2],[0.4,-0.2,0.3,0.6]];
+var d=4,L=3,scores=[],weights=[],step=0,tmr=null;
+var cs=['#f87171','#fb923c','#60a5fa'],green='#4ade80';
+function fmt(v){return v>=0?' '+v.toFixed(1):v.toFixed(1)}
+function fmtS(v){return v>=0?' '+v.toFixed(3):v.toFixed(3)}
+function tex(s){try{return katex.renderToString(s,{throwOnError:false})}catch(e){return s}}
+
+function render(){
+scores=[];weights=[];step=0;
+var h='<div class="params"><b>d = '+d+'</b> &nbsp;·&nbsp; <b>L = '+L+'</b> &nbsp;（序列长度 3，隐藏维度 4）</div>';
+h+='<div class="info" id="info">点击 <b>下一步</b> 逐步查看 Single-Head Attention 的计算过程</div>';
+h+='<div class="controls"><button class="btn btn-next" onclick="prev()">⏮ 上一步</button><button class="btn btn-next" onclick="go()">⏭ 下一步</button><button class="btn btn-reset" onclick="rst()">↺ 重置</button><button class="btn btn-auto" onclick="play()">▶ 自动播放</button></div>';
+h+='<div class="grid">';
+h+='<div class="mat"><div class="mat-label">'+tex('\\mathbf{q}_3')+'</div><div class="mat-shape">1 × d = 1×'+d+'</div><table><tr>';
+for(var i=0;i<d;i++)h+='<td class="c" id="q'+i+'">'+fmt(Q[i])+'</td>';
+h+='</tr></table></div>';
+h+='<div class="arrow">×</div>';
+h+='<div class="mat"><div class="mat-label">'+tex('K')+'</div><div class="mat-shape">L × d = '+L+'×'+d+'</div><table>';
+for(var r=0;r<L;r++){h+='<tr>';for(var c=0;c<d;c++)h+='<td class="c" id="k'+r+c+'">'+fmt(K[r][c])+'</td>';h+='</tr>';}
+h+='</table></div>';
+h+='<div class="arrow">→</div>';
+h+='<div class="mat"><div class="mat-label">'+tex('\\text{Score}/\\sqrt{d}')+'</div><div class="mat-shape">L × 1 = '+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="s'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+h+='<div class="arrow">→</div>';
+h+='<div class="mat"><div class="mat-label">'+tex('\\boldsymbol{\\alpha}')+'</div><div class="mat-shape">L × 1 = '+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="w'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+h+='<div class="arrow">×</div>';
+h+='<div class="mat"><div class="mat-label">'+tex('V')+'</div><div class="mat-shape">L × d = '+L+'×'+d+'</div><table>';
+for(var r=0;r<L;r++){h+='<tr>';for(var c=0;c<d;c++)h+='<td class="c" id="v'+r+c+'">'+fmt(V[r][c])+'</td>';h+='</tr>';}
+h+='</table></div>';
+h+='<div class="arrow">→</div>';
+h+='<div class="mat"><div class="mat-label">'+tex('\\mathbf{o}_3')+'</div><div class="mat-shape">1 × d = 1×'+d+'</div><table><tr>';
+for(var i=0;i<d;i++)h+='<td class="c cw" id="o'+i+'" style="color:var(--dim)">—</td>';
+h+='</tr></table></div>';
+h+='</div>';
+document.getElementById('root').innerHTML=h;
+}
+
+function hl(id,c){var e=document.getElementById(id);if(e){e.style.background=c;e.style.color='#fff';e.style.boxShadow='0 0 10px '+c+'66'}}
+function un(id){var e=document.getElementById(id);if(e){e.style.background='';e.style.color='var(--text)';e.style.boxShadow='none'}}
+function sc(id,v,c){var e=document.getElementById(id);if(e){e.textContent=v;e.style.color='#fff';if(c){e.style.background=c;e.style.boxShadow='0 0 10px '+c+'66'}}}
+function clr(){var ids=[];for(var i=0;i<d;i++)ids.push('q'+i);for(var r=0;r<L;r++){ids.push('s'+r);ids.push('w'+r);for(var c=0;c<d;c++){ids.push('k'+r+c);ids.push('v'+r+c)}}for(var i=0;i<d;i++)ids.push('o'+i);ids.forEach(un)}
+function info(n,t){document.getElementById('info').innerHTML='<span class="step-num">'+n+'</span>'+t}
+
+render();
+
+var steps=[
+function(){clr();info(1,tex('\\mathbf{q}_3^\\top \\cdot \\mathbf{k}_1')+' = 0.5×0.3 + (−0.2)×0.7 + 0.8×(−0.1) + 0.1×0.4');for(var i=0;i<d;i++){hl('q'+i,cs[0]);hl('k0'+i,cs[0])}var s=0;for(var i=0;i<d;i++)s+=Q[i]*K[0][i];scores[0]=s;sc('s0',s.toFixed(3),cs[0])},
+function(){clr();info(2,tex('\\mathbf{q}_3^\\top \\cdot \\mathbf{k}_2')+' = 0.5×(−0.4) + (−0.2)×0.2 + 0.8×0.6 + 0.1×(−0.3)');for(var i=0;i<d;i++){hl('q'+i,cs[1]);hl('k1'+i,cs[1])}var s=0;for(var i=0;i<d;i++)s+=Q[i]*K[1][i];scores[1]=s;sc('s1',s.toFixed(3),cs[1])},
+function(){clr();info(3,tex('\\mathbf{q}_3^\\top \\cdot \\mathbf{k}_3')+' = 0.5×0.6 + (−0.2)×(−0.1) + 0.8×0.3 + 0.1×0.5');for(var i=0;i<d;i++){hl('q'+i,cs[2]);hl('k2'+i,cs[2])}var s=0;for(var i=0;i<d;i++)s+=Q[i]*K[2][i];scores[2]=s;sc('s2',s.toFixed(3),cs[2])},
+function(){clr();info(4,'除以 '+tex('\\sqrt{d}=\\sqrt{4}=2')+'，缩放 score 防止 Softmax 饱和');for(var r=0;r<L;r++){scores[r]/=Math.sqrt(d);sc('s'+r,fmtS(scores[r]),cs[r])}},
+function(){clr();info(5,tex('\\alpha_j = \\text{Softmax}(s_j)')+'  归一化 → 权重之和 = 1');var ex=scores.map(Math.exp),sm=ex.reduce(function(a,b){return a+b},0);weights=ex.map(function(e){return e/sm});for(var r=0;r<L;r++){hl('s'+r,cs[r]);sc('w'+r,(weights[r]*100).toFixed(1)+'%',cs[r])}},
+function(){clr();info(6,tex('o_3[0]=\\sum_j \\alpha_j \\cdot v_j[0]'));for(var r=0;r<L;r++){hl('w'+r,cs[r]);hl('v'+r+'0',cs[r])}var v=0;for(var r=0;r<L;r++)v+=weights[r]*V[r][0];sc('o0',v.toFixed(3),green)},
+function(){clr();info(7,tex('o_3[1]=\\sum_j \\alpha_j \\cdot v_j[1]'));for(var r=0;r<L;r++){hl('w'+r,cs[r]);hl('v'+r+'1',cs[r])}var v=0;for(var r=0;r<L;r++)v+=weights[r]*V[r][1];sc('o1',v.toFixed(3),green)},
+function(){clr();info(8,tex('o_3[2]=\\sum_j \\alpha_j \\cdot v_j[2]'));for(var r=0;r<L;r++){hl('w'+r,cs[r]);hl('v'+r+'2',cs[r])}var v=0;for(var r=0;r<L;r++)v+=weights[r]*V[r][2];sc('o2',v.toFixed(3),green)},
+function(){clr();info(9,tex('o_3[3]=\\sum_j \\alpha_j \\cdot v_j[3]')+' — ✅ 完成');for(var r=0;r<L;r++){hl('w'+r,cs[r]);hl('v'+r+'3',cs[r])}var v=0;for(var r=0;r<L;r++)v+=weights[r]*V[r][3];sc('o3',v.toFixed(3),green)}
+];
+
+function go(){if(step>=steps.length)return;steps[step]();step++}
+function prev(){if(step<=1){rst();return}var t=step-2;rst();for(var i=0;i<=t;i++){steps[i]();step=i+1}}
+function rst(){if(tmr){clearInterval(tmr);tmr=null}render()}
+function play(){rst();var i=0;tmr=setInterval(function(){if(i>=steps.length){clearInterval(tmr);tmr=null;return}step=i;go();i++},1300)}
+</script>
+</body>
+</html>

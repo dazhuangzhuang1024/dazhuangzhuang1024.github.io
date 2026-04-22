@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.38/dist/katex.min.css" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.38/dist/katex.min.js" crossorigin="anonymous"></script>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--border:#334155;--text:#e2e8f0;--dim:#94a3b8;--accent:#3b82f6;--green:#4ade80;--red:#f87171;--orange:#fb923c;--purple:#a78bfa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:20px;font-size:15px;line-height:1.5}
+.params{display:inline-block;background:var(--card);border:1px solid var(--border);padding:4px 12px;border-radius:6px;font-size:0.8em;color:var(--dim);margin-bottom:8px}
+.params b{color:var(--accent)}
+.scene{font-size:0.9em;color:var(--dim);margin-bottom:12px;padding:6px 10px;background:var(--card);border-radius:6px;border:1px solid var(--border)}
+.scene b{color:var(--text)}
+.info{background:var(--card);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:16px;font-size:0.9em;min-height:44px;display:flex;align-items:center}
+.controls{display:flex;gap:8px;margin-bottom:16px}
+.btn{padding:8px 20px;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:0.85em;font-weight:600;transition:all 0.2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.btn-next{background:var(--accent);color:#fff}
+.btn-reset{background:var(--card);color:var(--dim);border:1px solid var(--border)}
+.btn-auto{background:#059669;color:#fff}
+.group-box{border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px}
+.group-label{font-size:0.8em;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.group-label .dot{width:10px;height:10px;border-radius:50%}
+.grid{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start}
+.mat{display:flex;flex-direction:column;align-items:center}
+.mat-label{font-size:0.9em;font-weight:700;color:var(--dim);letter-spacing:0.06em;margin-bottom:2px}
+.mat-shape{font-size:0.6em;color:var(--accent);margin-bottom:6px;font-weight:600}
+table{border-collapse:collapse;background:var(--card);border-radius:6px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.2)}
+td.c{width:42px;height:28px;text-align:center;vertical-align:middle;border:1px solid var(--border);font-size:0.95em;font-weight:500;transition:all 0.3s;color:var(--text);font-variant-numeric:tabular-nums}
+td.cw{width:52px}
+.arrow{color:var(--dim);font-size:1.1em;display:flex;align-items:center;padding:0 2px;margin-top:14px}
+.step-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:0.75em;font-weight:700;margin-right:8px;flex-shrink:0}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// GQA: n_h=4, g=2, d_h=2, L=3 tokens
+// 演示 token t=3 对 token 1,2,3 做 attention
+// Group 1: Head 1,2 共享 K1,V1; Group 2: Head 3,4 共享 K2,V2
+var Q1=[0.5,0.3],Q2=[0.1,0.8],Q3=[-0.4,0.6],Q4=[0.7,-0.2]; // 4 heads 的 query for t=3
+var K1=[[0.2,0.9],[0.6,-0.1],[0.4,0.5]]; // Group 1 的 key (3 tokens)
+var K2=[[-0.3,0.4],[0.8,0.2],[0.1,0.7]]; // Group 2 的 key (3 tokens)
+var V1=[[0.6,-0.1],[0.3,0.7],[0.5,0.2]]; // Group 1 的 value
+var V2=[[0.1,0.8],[-0.2,0.4],[0.7,0.3]]; // Group 2 的 value
+var dh=2,nh=4,g=2,L=3,step=0,tmr=null;
+var scores1_h1=[],scores1_h2=[],scores2_h3=[],scores2_h4=[];
+var w1_h1=[],w1_h2=[];
+var cs=['#f87171','#fb923c','#60a5fa'];
+
+function fmt(v){return v>=0?v.toFixed(1):v.toFixed(1)}
+function dot(a,b){var s=0;for(var i=0;i<a.length;i++)s+=a[i]*b[i];return s}
+function tex(s){try{return katex.renderToString(s,{throwOnError:false})}catch(e){return s}}
+function softmax(arr){var mx=Math.max.apply(null,arr);var ex=arr.map(function(v){return Math.exp(v-mx)});var sm=ex.reduce(function(a,b){return a+b},0);return ex.map(function(v){return v/sm})}
+
+function render(){
+scores1_h1=[];scores1_h2=[];scores2_h3=[];scores2_h4=[];w1_h1=[];w1_h2=[];step=0;
+var h='<div class="params"><b>n_h = '+nh+'</b> · <b>g = '+g+'</b> · <b>d_h = '+dh+'</b> · <b>L = '+L+'</b></div>';
+h+='<div class="scene">场景：<b>token t=3</b> 对 <b>token 1, 2, 3</b> 做 GQA attention。4 个 head 分成 2 组，每组内共享 K 和 V。</div>';
+h+='<div class="info" id="info">点击 <b>下一步</b> 逐步查看 GQA 各 head 的 score 计算</div>';
+h+='<div class="controls"><button class="btn btn-next" onclick="prev()">⏮ 上一步</button><button class="btn btn-next" onclick="go()">⏭ 下一步</button><button class="btn btn-reset" onclick="rst()">↺ 重置</button><button class="btn btn-auto" onclick="play()">▶ 自动播放</button></div>';
+
+// Group 1
+h+='<div class="group-box" style="border-color:#f8717144">';
+h+='<div class="group-label"><span class="dot" style="background:var(--red)"></span>Group 1：Head 1, 2 共享 K₁, V₁</div>';
+h+='<div class="grid">';
+// Q1
+h+='<div class="mat"><div class="mat-label">'+tex('\\mathbf{q}_1')+' (t=3)</div><div class="mat-shape">1×'+dh+'</div><table><tr>';
+for(var c=0;c<dh;c++)h+='<td class="c" id="q0'+c+'">'+fmt(Q1[c])+'</td>';
+h+='</tr></table></div>';
+// Q2
+h+='<div class="mat"><div class="mat-label">'+tex('\\mathbf{q}_2')+' (t=3)</div><div class="mat-shape">1×'+dh+'</div><table><tr>';
+for(var c=0;c<dh;c++)h+='<td class="c" id="q1'+c+'">'+fmt(Q2[c])+'</td>';
+h+='</tr></table></div>';
+h+='<div class="arrow">×</div>';
+// K1
+h+='<div class="mat"><div class="mat-label">'+tex('K_1')+' (共享)</div><div class="mat-shape">L×d_h = '+L+'×'+dh+'</div><table>';
+for(var r=0;r<L;r++){h+='<tr>';for(var c=0;c<dh;c++)h+='<td class="c" id="k0'+r+c+'">'+fmt(K1[r][c])+'</td>';h+='</tr>';}
+h+='</table></div>';
+h+='<div class="arrow">→</div>';
+// Scores for H1
+h+='<div class="mat"><div class="mat-label">'+tex('\\text{Score}/\\sqrt{d_h}')+'</div><div class="mat-shape">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="s0'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+// Scores for H2
+h+='<div class="mat"><div class="mat-label">'+tex('\\text{Score}/\\sqrt{d_h}')+'</div><div class="mat-shape">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="s1'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+h+='<div class="arrow">→</div>';
+// Softmax H1
+h+='<div class="mat"><div class="mat-label">'+tex('\\alpha^{H1}')+'</div><div class="mat-shape">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="w0'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+// Softmax H2
+h+='<div class="mat"><div class="mat-label">'+tex('\\alpha^{H2}')+'</div><div class="mat-shape">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="w1'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+h+='</div></div>';
+
+// Group 2
+h+='<div class="group-box" style="border-color:#a78bfa44">';
+h+='<div class="group-label"><span class="dot" style="background:var(--purple)"></span>Group 2：Head 3, 4 共享 K₂, V₂</div>';
+h+='<div class="grid">';
+h+='<div class="mat"><div class="mat-label">'+tex('\\mathbf{q}_3')+' (t=3)</div><div class="mat-shape">1×'+dh+'</div><table><tr>';
+for(var c=0;c<dh;c++)h+='<td class="c" id="q2'+c+'">'+fmt(Q3[c])+'</td>';
+h+='</tr></table></div>';
+h+='<div class="mat"><div class="mat-label">'+tex('\\mathbf{q}_4')+' (t=3)</div><div class="mat-shape">1×'+dh+'</div><table><tr>';
+for(var c=0;c<dh;c++)h+='<td class="c" id="q3'+c+'">'+fmt(Q4[c])+'</td>';
+h+='</tr></table></div>';
+h+='<div class="arrow">×</div>';
+h+='<div class="mat"><div class="mat-label">'+tex('K_2')+' (共享)</div><div class="mat-shape">L×d_h = '+L+'×'+dh+'</div><table>';
+for(var r=0;r<L;r++){h+='<tr>';for(var c=0;c<dh;c++)h+='<td class="c" id="k1'+r+c+'">'+fmt(K2[r][c])+'</td>';h+='</tr>';}
+h+='</table></div>';
+h+='<div class="arrow">→</div>';
+h+='<div class="mat"><div class="mat-label">'+tex('\\text{Score}/\\sqrt{d_h}')+'</div><div class="mat-shape">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="s2'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+h+='<div class="mat"><div class="mat-label">'+tex('\\text{Score}/\\sqrt{d_h}')+'</div><div class="mat-shape">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="s3'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+h+='<div class="arrow">→</div>';
+h+='<div class="mat"><div class="mat-label">'+tex('\\alpha^{H3}')+'</div><div class="mat-shape">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="w2'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+h+='<div class="mat"><div class="mat-label">'+tex('\\alpha^{H4}')+'</div><div class="mat-shape">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr><td class="c cw" id="w3'+r+'" style="color:var(--dim)">—</td></tr>';
+h+='</table></div>';
+h+='</div></div>';
+
+document.getElementById('root').innerHTML=h;
+}
+
+function hl(id,c){var e=document.getElementById(id);if(e){e.style.background=c;e.style.color='#fff';e.style.boxShadow='0 0 8px '+c+'66'}}
+function un(id){var e=document.getElementById(id);if(e){e.style.background='';e.style.color='var(--text)';e.style.boxShadow='none'}}
+function sc(id,v,c){var e=document.getElementById(id);if(e){e.textContent=v;e.style.color='#fff';if(c){e.style.background=c;e.style.boxShadow='0 0 8px '+c+'66'}}}
+function clr(){var ids=[];for(var h=0;h<4;h++)for(var c=0;c<dh;c++)ids.push('q'+h+c);for(var g2=0;g2<2;g2++)for(var r=0;r<L;r++)for(var c=0;c<dh;c++)ids.push('k'+g2+r+c);for(var h=0;h<4;h++)for(var r=0;r<L;r++){ids.push('s'+h+r);ids.push('w'+h+r)}ids.forEach(un)}
+function info(n,t){document.getElementById('info').innerHTML='<span class="step-num">'+n+'</span>'+t}
+render();
+
+var Qs=[Q1,Q2,Q3,Q4],Ks=[K1,K1,K2,K2],gIdx=[0,0,1,1];
+var allScores=[[],[],[],[]];
+
+var steps=[
+// H1: Q1 x K1 (3 tokens)
+function(){clr();info(1,'Head 1：'+tex('\\mathbf{q}_1^\\top K_1[j] / \\sqrt{d_h}')+' ，j = 1,2,3（'+tex('\\mathbf{q}_1')+' 和 '+tex('K_1')+' 属于 Group 1）');
+for(var c=0;c<dh;c++)hl('q0'+c,'#3b82f6');
+for(var r=0;r<L;r++){for(var c=0;c<dh;c++)hl('k0'+r+c,cs[r]);var s=dot(Q1,K1[r])/Math.sqrt(dh);allScores[0][r]=s;sc('s0'+r,s.toFixed(2),cs[r])}},
+// H2: Q2 x K1 (same K!)
+function(){clr();info(2,'Head 2：'+tex('\\mathbf{q}_2^\\top K_1[j] / \\sqrt{d_h}')+' — 注意用的是同一个 '+tex('K_1')+'（Group 1 共享）');
+for(var c=0;c<dh;c++)hl('q1'+c,'#3b82f6');
+for(var r=0;r<L;r++){for(var c=0;c<dh;c++)hl('k0'+r+c,cs[r]);var s=dot(Q2,K1[r])/Math.sqrt(dh);allScores[1][r]=s;sc('s1'+r,s.toFixed(2),cs[r])}},
+// Softmax G1
+function(){clr();info(3,'Group 1 Softmax：Head 1 和 Head 2 各自独立归一化');
+w1_h1=softmax(allScores[0]);w1_h2=softmax(allScores[1]);
+for(var r=0;r<L;r++){sc('w0'+r,(w1_h1[r]*100).toFixed(1)+'%',cs[r]);sc('w1'+r,(w1_h2[r]*100).toFixed(1)+'%',cs[r])}},
+// H3: Q3 x K2
+function(){clr();info(4,'Head 3：'+tex('\\mathbf{q}_3^\\top K_2[j] / \\sqrt{d_h}')+'（'+tex('\\mathbf{q}_3')+' 属于 Group 2，用 '+tex('K_2')+'）');
+for(var c=0;c<dh;c++)hl('q2'+c,'#3b82f6');
+for(var r=0;r<L;r++){for(var c=0;c<dh;c++)hl('k1'+r+c,cs[r]);var s=dot(Q3,K2[r])/Math.sqrt(dh);allScores[2][r]=s;sc('s2'+r,s.toFixed(2),cs[r])}},
+// H4: Q4 x K2 (same K!)
+function(){clr();info(5,'Head 4：'+tex('\\mathbf{q}_4^\\top K_2[j] / \\sqrt{d_h}')+' — 同一个 '+tex('K_2')+'（Group 2 共享）');
+for(var c=0;c<dh;c++)hl('q3'+c,'#3b82f6');
+for(var r=0;r<L;r++){for(var c=0;c<dh;c++)hl('k1'+r+c,cs[r]);var s=dot(Q4,K2[r])/Math.sqrt(dh);allScores[3][r]=s;sc('s3'+r,s.toFixed(2),cs[r])}},
+// Softmax G2
+function(){clr();info(6,'Group 2 Softmax + ✅ 完成！每组内 head 共享 K/V，但 Q 和权重各自独立');
+var w3=softmax(allScores[2]),w4=softmax(allScores[3]);
+for(var r=0;r<L;r++){sc('w2'+r,(w3[r]*100).toFixed(1)+'%',cs[r]);sc('w3'+r,(w4[r]*100).toFixed(1)+'%',cs[r])}}
+];
+
+function go(){if(step>=steps.length)return;steps[step]();step++}
+function prev(){if(step<=1){rst();return}var t=step-2;rst();for(var i=0;i<=t;i++){steps[i]();step=i+1}}
+function rst(){if(tmr){clearInterval(tmr);tmr=null}render()}
+function play(){rst();var i=0;tmr=setInterval(function(){if(i>=steps.length){clearInterval(tmr);tmr=null;return}step=i;go();i++},1500)}
+</script>
+</body>
+</html>

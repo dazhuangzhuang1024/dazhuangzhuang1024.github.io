@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.38/dist/katex.min.css" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.38/dist/katex.min.js" crossorigin="anonymous"></script>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--border:#334155;--text:#e2e8f0;--dim:#94a3b8;--accent:#3b82f6;--green:#4ade80;--red:#f87171;--yellow:#fbbf24;--orange:#fb923c;--purple:#a78bfa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);padding:16px;font-size:15px;line-height:1.5}
+.scene{font-size:0.9em;color:var(--dim);margin-bottom:10px;padding:6px 10px;background:var(--card);border-radius:6px;border:1px solid var(--border)}.scene b{color:var(--text)}
+.info{background:var(--card);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:12px;font-size:0.9em;min-height:40px;display:flex;align-items:center}
+.controls{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.btn{padding:7px 16px;border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-size:0.85em;font-weight:600;transition:all 0.2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.bn{background:var(--accent);color:#fff}.br{background:var(--card);color:var(--dim);border:1px solid var(--border)}.ba{background:#059669;color:#fff}
+.stitle{font-size:0.8em;font-weight:700;color:var(--dim);margin:12px 0 6px;display:flex;align-items:center;gap:6px}
+.stitle .dot{width:10px;height:10px;border-radius:50%}
+.pbox{border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px}
+.g{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;margin-bottom:4px}
+.m{display:flex;flex-direction:column;align-items:center}
+.ml{font-size:0.85em;font-weight:700;color:var(--dim);letter-spacing:0.04em;margin-bottom:1px}
+.ms{font-size:0.7em;color:var(--accent);margin-bottom:4px;font-weight:600}
+table{border-collapse:collapse;background:var(--card);border-radius:5px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.15)}
+td.c{width:44px;height:30px;text-align:center;vertical-align:middle;border:1px solid var(--border);font-size:0.9em;font-weight:500;transition:all 0.3s;color:var(--text);font-variant-numeric:tabular-nums}
+td.cw{width:56px}
+.ar{color:var(--dim);font-size:1em;display:flex;align-items:center;padding:0 2px;margin-top:8px}
+.sn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:0.7em;font-weight:700;margin-right:6px;flex-shrink:0}
+.eq{font-size:0.85em;color:var(--dim);margin:3px 0;padding:3px 8px;background:#0f172a;border-radius:4px;font-family:monospace;min-height:1.2em}.eq b{color:var(--green)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// DSA example: L=5 past tokens, query=t6, H_I=2 indexer heads, d_I=2, k=2 (top-2)
+var L=5, topK=2, HI=2, dI=2;
+
+// Indexer queries for t6 (2 heads, each d_I=2)
+var qI=[[0.8,-0.3],[0.1,0.9]];
+// Indexer keys for 5 past tokens (MQA style, shared across heads)
+var kI=[[0.6,0.2],[-0.4,0.7],[0.3,-0.1],[0.9,0.5],[-0.2,0.8]];
+// Per-head weights
+var wI=[0.6, 0.4];
+
+// MLA latent vectors for sparse attention (d_c=2)
+var cKV=[[0.5,-0.2],[0.3,0.7],[-0.1,0.4],[0.8,-0.3],[0.2,0.6]];
+var qTilde=[0.4, -0.1]; // absorbed query
+// V up-projected (d=3 for output)
+var Vup=[[0.3,0.1,0.5],[0.6,-0.2,0.4],[-0.1,0.7,0.2],[0.4,0.3,-0.1],[0.2,0.5,0.3]];
+
+var step=0,tmr=null;
+var dotProducts=[], reluVals=[], indexScores=[], selectedIdx=[];
+var sparseScores=[], sparseWeights=[], output=[];
+
+function f2(v){return v>=0?v.toFixed(2):v.toFixed(2)}
+function f3(v){return v>=0?v.toFixed(3):v.toFixed(3)}
+function dot(a,b){var s=0;for(var i=0;i<a.length;i++)s+=a[i]*b[i];return s}
+function tex(s){try{return katex.renderToString(s,{throwOnError:false})}catch(e){return s}}
+function softmax(a){var mx=Math.max.apply(null,a);var e=a.map(function(v){return Math.exp(v-mx)});var s=e.reduce(function(a,b){return a+b},0);return e.map(function(v){return v/s})}
+
+var allIds=[];
+function rid(id){allIds.push(id);return id}
+function hl(id,c){var e=document.getElementById(id);if(e){e.style.background=c;e.style.color='#fff';e.style.boxShadow='0 0 6px '+c+'55'}}
+function un(id){var e=document.getElementById(id);if(e){e.style.background='';e.style.color='var(--text)';e.style.boxShadow='none'}}
+function sc(id,v,c){var e=document.getElementById(id);if(e){e.textContent=v;if(c){e.style.color='#fff';e.style.background=c;e.style.boxShadow='0 0 6px '+c+'55'}}}
+function clr(){allIds.forEach(un)}
+function info(n,t){document.getElementById('info').innerHTML='<span class="sn">'+n+'</span>'+t}
+function setEq(id,t){var e=document.getElementById(id);if(e)e.innerHTML=t}
+
+function cell(id,v,cls){return '<td class="c'+(cls?' '+cls:'')+'" id="'+rid(id)+'">'+v+'</td>'}
+function cellE(id,cls){return '<td class="c'+(cls?' '+cls:'')+'" id="'+rid(id)+'" style="color:var(--dim)">—</td>'}
+function ar(t){return '<div class="ar">'+t+'</div>'}
+
+function render(){
+dotProducts=[];reluVals=[];indexScores=[];selectedIdx=[];sparseScores=[];sparseWeights=[];output=[];
+allIds=[];step=0;
+var tl=['t₁','t₂','t₃','t₄','t₅'];
+var h='<div class="scene">场景：<b>token t₆</b>（query）对 <b>t₁~t₅</b> 做 DSA。阶段 1 用 Lightning Indexer（H_I='+HI+' heads, d_I='+dI+'）扫描全部 5 个 token，选 Top-'+topK+'；阶段 2 只对选中的 token 做 MLA attention。</div>';
+h+='<div class="info" id="info">点击 <b>下一步</b> 逐步查看 DSA 的完整计算过程</div>';
+h+='<div class="controls"><button class="btn bn" onclick="prev()">⏮ 上一步</button><button class="btn bn" onclick="go()">⏭ 下一步</button><button class="btn br" onclick="rst()">↺ 重置</button><button class="btn ba" onclick="play()">▶ 自动播放</button></div>';
+
+// === Stage 1: Indexer ===
+h+='<div class="pbox" style="border-color:#fbbf2444">';
+h+='<div class="stitle"><span class="dot" style="background:var(--yellow)"></span>阶段 1：Lightning Indexer — 计算 Index Score</div>';
+
+// Indexer Q (2 heads)
+h+='<div class="g">';
+for(var hi=0;hi<HI;hi++){
+h+='<div class="m"><div class="ml">'+tex('\\mathbf{q}_{I,'+(hi+1)+'}')+'</div><div class="ms">1×'+dI+'</div><table><tr>';
+for(var c=0;c<dI;c++)h+=cell('qi'+hi+c,f2(qI[hi][c]));
+h+='</tr></table></div>';
+}
+h+=ar('·');
+// Indexer K (shared, L tokens)
+h+='<div class="m"><div class="ml">'+tex('\\mathbf{k}_I')+' (MQA共享)</div><div class="ms">'+L+'×'+dI+'</div><table>';
+for(var r=0;r<L;r++){h+='<tr>';for(var c=0;c<dI;c++)h+=cell('ki'+r+c,f2(kI[r][c]));h+='</tr>';}
+h+='</table></div>';
+h+=ar('→');
+// Dot products per head
+for(var hi=0;hi<HI;hi++){
+h+='<div class="m"><div class="ml">dot H'+(hi+1)+'</div><div class="ms">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr>'+cellE('dp'+hi+r,'cw')+'</tr>';
+h+='</table></div>';
+}
+h+=ar('ReLU→');
+// ReLU results
+for(var hi=0;hi<HI;hi++){
+h+='<div class="m"><div class="ml">ReLU H'+(hi+1)+'</div><div class="ms">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr>'+cellE('rl'+hi+r,'cw')+'</tr>';
+h+='</table></div>';
+}
+h+=ar('w·Σ→');
+// Index scores
+h+='<div class="m"><div class="ml">'+tex('I_{t,s}')+'</div><div class="ms">'+L+'×1</div><table>';
+for(var r=0;r<L;r++)h+='<tr>'+cellE('is'+r,'cw')+'</tr>';
+h+='</table></div>';
+h+=ar('Top-'+topK+'→');
+// Selection
+h+='<div class="m"><div class="ml">选中</div><div class="ms">'+topK+'</div><table>';
+for(var r=0;r<topK;r++)h+='<tr>'+cellE('sel'+r,'cw')+'</tr>';
+h+='</table></div>';
+h+='</div>';
+h+='<div class="eq" id="eq1"></div>';
+h+='</div>';
+
+// === Stage 2: Sparse MLA Attention ===
+h+='<div class="pbox" style="border-color:#4ade8044">';
+h+='<div class="stitle"><span class="dot" style="background:var(--green)"></span>阶段 2：Sparse MLA Attention（仅对选中的 '+topK+' 个 token）</div>';
+h+='<div class="g">';
+h+='<div class="m"><div class="ml">'+tex('\\tilde{\\mathbf{q}}_t')+' (absorbed)</div><div class="ms">1×2</div><table><tr>';
+for(var c=0;c<2;c++)h+=cell('qt'+c,f2(qTilde[c]));
+h+='</tr></table></div>';
+h+=ar('·');
+h+='<div class="m"><div class="ml">'+tex('\\mathbf{c}_j')+' (选中)</div><div class="ms">'+topK+'×2</div><table>';
+for(var r=0;r<topK;r++){h+='<tr>';for(var c=0;c<2;c++)h+=cellE('cj'+r+c,'');h+='</tr>';}
+h+='</table></div>';
+h+=ar('→');
+h+='<div class="m"><div class="ml">'+tex('\\text{Score}/\\sqrt{d_c}')+'</div><div class="ms">'+topK+'×1</div><table>';
+for(var r=0;r<topK;r++)h+='<tr>'+cellE('ss'+r,'cw')+'</tr>';
+h+='</table></div>';
+h+=ar('→');
+h+='<div class="m"><div class="ml">'+tex('\\boldsymbol{\\alpha}')+'</div><div class="ms">'+topK+'×1</div><table>';
+for(var r=0;r<topK;r++)h+='<tr>'+cellE('sw'+r,'cw')+'</tr>';
+h+='</table></div>';
+h+=ar('× V →');
+h+='<div class="m"><div class="ml">Output</div><div class="ms">1×3</div><table><tr>';
+for(var c=0;c<3;c++)h+=cellE('out'+c,'cw');
+h+='</tr></table></div>';
+h+='</div>';
+h+='<div class="eq" id="eq2"></div>';
+h+='</div>';
+
+document.getElementById('root').innerHTML=h;
+}
+render();
+
+var cs=['#f87171','#fb923c','#60a5fa','#a78bfa','#2dd4bf'];
+
+var steps=[
+// Step 1: dot products for head 1
+function(){clr();info(1,'Indexer Head 1：'+tex('\\mathbf{q}_{I,1}^\\top \\cdot \\mathbf{k}_I[j]')+'，j=1..5');
+for(var c=0;c<dI;c++)hl('qi0'+c,'#3b82f6');
+for(var r=0;r<L;r++){
+for(var c=0;c<dI;c++)hl('ki'+r+c,cs[r]);
+var d=dot(qI[0],kI[r]);
+if(!dotProducts[0])dotProducts[0]=[];
+dotProducts[0][r]=d;
+sc('dp0'+r,f2(d),cs[r]);
+}
+setEq('eq1','w₁='+wI[0]+', w₂='+wI[1]+' — 每个 head 的权重')},
+
+// Step 2: dot products for head 2
+function(){clr();info(2,'Indexer Head 2：'+tex('\\mathbf{q}_{I,2}^\\top \\cdot \\mathbf{k}_I[j]')+'，j=1..5');
+for(var c=0;c<dI;c++)hl('qi1'+c,'#3b82f6');
+for(var r=0;r<L;r++){
+for(var c=0;c<dI;c++)hl('ki'+r+c,cs[r]);
+var d=dot(qI[1],kI[r]);
+if(!dotProducts[1])dotProducts[1]=[];
+dotProducts[1][r]=d;
+sc('dp1'+r,f2(d),cs[r]);
+}},
+
+// Step 3: ReLU
+function(){clr();info(3,'ReLU：丢弃负值（负相关的 token 直接置零）');
+for(var hi=0;hi<HI;hi++){
+if(!reluVals[hi])reluVals[hi]=[];
+for(var r=0;r<L;r++){
+var v=Math.max(0,dotProducts[hi][r]);
+reluVals[hi][r]=v;
+var c=v>0?cs[r]:'#334155';
+sc('rl'+hi+r,f2(v),c);
+if(v===0)document.getElementById('rl'+hi+r).style.color='var(--dim)';
+}
+}
+setEq('eq1',tex('\\text{ReLU}(x) = \\max(0, x)')+' — 负值 → 0，比 Softmax 快得多')},
+
+// Step 4: weighted sum -> index scores
+function(){clr();info(4,'加权求和：'+tex('I_s = w_1 \\cdot \\text{ReLU}(H_1) + w_2 \\cdot \\text{ReLU}(H_2)'));
+for(var r=0;r<L;r++){
+var s=0;
+for(var hi=0;hi<HI;hi++){hl('rl'+hi+r,cs[r]);s+=wI[hi]*reluVals[hi][r]}
+indexScores[r]=s;
+sc('is'+r,f3(s),cs[r]);
+}
+setEq('eq1',tex('I_{t,s}')+' = ['+indexScores.map(f3).join(', ')+']')},
+
+// Step 5: Top-k selection
+function(){clr();info(5,'Top-'+topK+' 选择：score 最高的 '+topK+' 个 token');
+var indexed=indexScores.map(function(s,i){return{s:s,i:i}});
+indexed.sort(function(a,b){return b.s-a.s});
+selectedIdx=indexed.slice(0,topK).map(function(x){return x.i});
+for(var r=0;r<L;r++){
+if(selectedIdx.indexOf(r)>=0){
+sc('is'+r,f3(indexScores[r]),'#4ade80');
+}else{
+sc('is'+r,f3(indexScores[r]),'#334155');
+document.getElementById('is'+r).style.color='var(--dim)';
+}
+}
+for(var i=0;i<topK;i++){
+sc('sel'+i,'t'+(selectedIdx[i]+1),'#4ade80');
+}
+setEq('eq1','选中 ['+selectedIdx.map(function(i){return 't'+(i+1)}).join(', ')+'] — 其余 '+(L-topK)+' 个 token 跳过，不做 attention')},
+
+// Step 6: fill in selected c_j for sparse attention
+function(){clr();info(6,'阶段 2：取出选中 token 的 latent '+tex('\\mathbf{c}_j^{KV}')+'，准备做 MLA attention');
+for(var i=0;i<topK;i++){
+var ti=selectedIdx[i];
+for(var c=0;c<2;c++){
+sc('cj'+i+c,f2(cKV[ti][c]),'#4ade80');
+}
+}
+setEq('eq2','只需处理 '+topK+' 个 token（而不是全部 '+L+' 个）')},
+
+// Step 7: sparse scores
+function(){clr();info(7,'Sparse Score：'+tex('\\tilde{\\mathbf{q}}_t^\\top \\cdot \\mathbf{c}_j / \\sqrt{d_c}')+'（'+2+' 维点积 × '+topK+' 个 token）');
+for(var c=0;c<2;c++)hl('qt'+c,'#3b82f6');
+for(var i=0;i<topK;i++){
+var ti=selectedIdx[i];
+for(var c=0;c<2;c++)hl('cj'+i+c,cs[ti]);
+var s=dot(qTilde,cKV[ti])/Math.sqrt(2);
+sparseScores[i]=s;
+sc('ss'+i,f3(s),cs[ti]);
+}
+setEq('eq2','score = ['+sparseScores.map(f3).join(', ')+']')},
+
+// Step 8: softmax
+function(){clr();info(8,'Softmax 归一化（仅在选中的 '+topK+' 个 token 上）');
+sparseWeights=softmax(sparseScores);
+for(var i=0;i<topK;i++){
+var ti=selectedIdx[i];
+sc('sw'+i,(sparseWeights[i]*100).toFixed(1)+'%',cs[ti]);
+}
+setEq('eq2',tex('\\alpha')+' = ['+sparseWeights.map(function(w){return(w*100).toFixed(1)+'%'}).join(', ')+']')},
+
+// Step 9: weighted sum -> output
+function(){clr();info(9,'加权求和 → Output（用 V 上投影后的值）');
+output=[0,0,0];
+for(var i=0;i<topK;i++){
+var ti=selectedIdx[i];
+hl('sw'+i,cs[ti]);
+for(var c=0;c<3;c++)output[c]+=sparseWeights[i]*Vup[ti][c];
+}
+for(var c=0;c<3;c++)sc('out'+c,f3(output[c]),'#4ade80');
+setEq('eq2','output = ['+output.map(f3).join(', ')+'] ✅')},
+
+// Step 10: summary
+function(){clr();info(10,'✅ 完成！Indexer 扫描 5 个 token（FP8，极快），MLA 只处理了 '+topK+' 个（省 '+(L/topK).toFixed(1)+'×）');
+for(var i=0;i<topK;i++)sc('sel'+i,'t'+(selectedIdx[i]+1),'#4ade80');
+for(var c=0;c<3;c++)sc('out'+c,f3(output[c]),'#4ade80');
+setEq('eq1','Indexer 代价 ≈ 0.8%（FP8 + ReLU + MQA），主 attention 只处理 Top-'+topK);
+setEq('eq2','总计算量 ≈ Indexer(全部) + MLA(Top-'+topK+') ≪ MLA(全部 '+L+')')}
+];
+
+function go(){if(step>=steps.length)return;steps[step]();step++}
+function prev(){if(step<=1){rst();return}var target=step-2;rst();for(var i=0;i<=target;i++){steps[i]();step=i+1}}
+function rst(){if(tmr){clearInterval(tmr);tmr=null}render()}
+function play(){rst();var i=0;tmr=setInterval(function(){if(i>=steps.length){clearInterval(tmr);tmr=null;return}step=i;go();i++},1500)}
+</script>
+</body>
+</html>

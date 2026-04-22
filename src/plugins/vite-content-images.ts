@@ -11,6 +11,7 @@ const MIME_TYPES: Record<string, string> = {
   '.webp': 'image/webp',
   '.avif': 'image/avif',
   '.ico': 'image/x-icon',
+  '.html': 'text/html',
 };
 
 const IMAGE_EXTS = new Set(Object.keys(MIME_TYPES));
